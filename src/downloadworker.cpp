@@ -94,12 +94,29 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         return;
     }
 
-    // 获取文件大小
+    // 获取文件大小（带重试）
     locker.unlock();
-    if (!fetchFileSize()) {
-        emit errorOccurred("无法获取文件大小，或服务器不支持断点续传");
+
+    int maxRetries = 3;
+    int retryCount = 0;
+    bool sizeFetched = false;
+
+    while (!sizeFetched && retryCount < maxRetries) {
+        if (retryCount > 0) {
+            // 重试前等待，采用指数退避：1s, 2s, 4s
+            int delay = 1000 * (1 << (retryCount - 1));
+            QThread::msleep(delay);
+            qDebug() << "Retrying fetchFileSize, attempt" << retryCount + 1;
+        }
+        sizeFetched = fetchFileSize();
+        retryCount++;
+    }
+
+    if (!sizeFetched) {
+        emit errorOccurred("无法获取文件大小，请检查网络或URL");
         return;
     }
+
     locker.relock();
 
     // 创建临时目录（用于存放所有块的临时文件）
