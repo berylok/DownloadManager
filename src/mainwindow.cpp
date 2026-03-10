@@ -65,6 +65,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_statusUpdateTimer, &QTimer::timeout, this, &MainWindow::onDownloadProgressChanged);
     m_statusUpdateTimer->start(1000); // 每秒更新一次
 
+    // 加载保存的最大并发下载数
+    m_downloadManager->setMaxConcurrentDownloads(Preferences::getMaxConcurrentDownloads());
+
     //setWindowTitle("多线程下载器");
     resize(700, 600);
 
