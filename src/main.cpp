@@ -3,6 +3,9 @@
 #include <QIcon>
 #include "mainwindow.h"
 
+#include <QRandomGenerator>
+#include <QString>
+
 int main(int argc, char *argv[])
 {
     qRegisterMetaType<QPair<qint64, qint64>>();
@@ -11,7 +14,12 @@ int main(int argc, char *argv[])
 
     a.setApplicationName("DownloadManager");
     a.setOrganizationName("DownloadManager");
-    a.setApplicationDisplayName("多线程下载器1.63b");
+    // a.setApplicationDisplayName("多线程下载器1.63b2");
+
+    int randomNum = QRandomGenerator::global()->generate(); // 生成一个随机整数
+    QString newName = QString("多线程下载器1.63 -%1-").arg(randomNum);
+    a.setApplicationDisplayName(newName);
+
     a.setApplicationVersion("1.6.3");
 
 #ifdef Q_OS_LINUX
