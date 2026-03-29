@@ -107,10 +107,12 @@ void DownloadItem::setupUI()
 void DownloadItem::start()
 {
     if (!m_worker) return;
+    int threadCount = Preferences::getDefaultThreadCount();
+    qDebug() << "DownloadItem start with threadCount:" << threadCount;
     QMetaObject::invokeMethod(m_worker, "startDownload", Qt::QueuedConnection,
                               Q_ARG(QUrl, m_url),
                               Q_ARG(QString, m_savePath),
-                              Q_ARG(int, Preferences::getDefaultThreadCount()),//下载线程数量
+                              Q_ARG(int, threadCount),
                               Q_ARG(qint64, 0));
     m_statusLabel->setText("下载中...");
 }

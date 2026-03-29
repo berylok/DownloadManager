@@ -556,7 +556,7 @@ void MainWindow::quitApplication()
 
 void MainWindow::setupNetworkOptimization()
 {
-    QNetworkProxyFactory::setUseSystemConfiguration(false);
+    QNetworkProxyFactory::setUseSystemConfiguration(false); //使用系统代理 false true
     QNetworkProxy proxy;
     proxy.setType(QNetworkProxy::NoProxy);
     QNetworkProxy::setApplicationProxy(proxy);

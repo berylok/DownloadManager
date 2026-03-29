@@ -45,28 +45,30 @@ QString formatTimeFromSeconds(int seconds) {
 
 QString sanitizeFileName(const QString &name) {
     QString s = name;
-    // Windows/Linux 通用 forbidden 字符
-    const QString forbidden = QStringLiteral("\\/?%*:|\"<>\n\r\t");
+    // 保留 Windows 非法字符（正反斜杠等）
+    const QString forbidden = "\\/?%*:|\"<>";
     for (const QChar &c : forbidden) {
         s.replace(c, '_');
     }
 
-    // 去除首尾空格
+    // 去掉首尾空格和点（点结尾会变成空格或导致问题）
     s = s.trimmed();
-
-    // 如果为空，生成时间戳文件名
-    if (s.isEmpty()) {
+    if (s.isEmpty() || s == "." || s == "..") {
         return QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss");
     }
 
-    // 额外处理：Windows 保留文件名 (可选，防止保存为 CON, PRN 等)
-    // 如果需要跨平台完美兼容，可以取消下面注释
-    /*
-    const QStringList reserved = {"CON", "PRN", "AUX", "NUL", "COM1", "LPT1"};
-    if (reserved.contains(s.toUpper())) {
-        s = "_" + s;
+#ifdef Q_OS_WIN
+    // Windows 保留设备名（不区分大小写）
+    const QStringList reserved = {"CON", "PRN", "AUX", "NUL",
+                                  "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+                                  "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"};
+    QString base = s;
+    int dotIndex = base.indexOf('.');
+    QString namePart = (dotIndex == -1) ? base : base.left(dotIndex);
+    if (reserved.contains(namePart.toUpper())) {
+        s = "_" + s;   // 加前缀避免冲突
     }
-    */
+#endif
 
     return s;
 }

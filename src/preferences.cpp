@@ -1,10 +1,10 @@
 #include "preferences.h"
 #include <QStandardPaths>
-
+#include <QApplication>
 
 QSettings& Preferences::settings()
 {
-    static QSettings s("", "DownloadManager"); // 公司名和应用名可自定义
+    static QSettings s(QApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     return s;
 }
 
@@ -27,7 +27,7 @@ int Preferences::getMaxConcurrentDownloads()
 
 int Preferences::getDefaultThreadCount()
 {
-    return settings().value("Download/ThreadCount", 4).toInt();
+    return settings().value("Download/ThreadCount", 20).toInt();
 }
 
 

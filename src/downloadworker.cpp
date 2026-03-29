@@ -23,6 +23,7 @@
 #define MAX_RETRIES 3
 #endif
 
+
 DownloadWorker::DownloadWorker(QObject *parent)
     : QObject(parent)
     , m_canceled(false)
@@ -44,6 +45,7 @@ DownloadWorker::DownloadWorker(QObject *parent)
     m_speedUpdateTimer->setSingleShot(false);
 }
 
+
 DownloadWorker::~DownloadWorker()
 {
     qDebug() << "DownloadWorker destructor for" << m_fileName;
@@ -51,6 +53,7 @@ DownloadWorker::~DownloadWorker()
         cancelDownload();
     }
 }
+
 
 void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
                                    int threadCount, qint64 blockSize)
@@ -169,6 +172,7 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
     }
 }
 
+
 bool DownloadWorker::fetchFileSize()
 {
     QNetworkAccessManager manager;
@@ -218,6 +222,7 @@ bool DownloadWorker::fetchFileSize()
     return false;
 }
 
+
 void DownloadWorker::onSegmentProgress(int id, qint64 bytesReceived)
 {
     QMutexLocker locker(&m_mutex);
@@ -231,6 +236,7 @@ void DownloadWorker::onSegmentProgress(int id, qint64 bytesReceived)
     emit progressUpdated(m_downloadedSize, m_fileSize, m_speed);
 }
 
+
 void DownloadWorker::onSegmentFinished(int id)
 {
     qDebug() << "Segment thread" << id << "finished (no more blocks)";
@@ -238,6 +244,7 @@ void DownloadWorker::onSegmentFinished(int id)
     m_finishedSegments++;
     // 不在此处触发合并，合并由 onBlockFinished 完成
 }
+
 
 void DownloadWorker::onSegmentCanceled(int id)
 {
@@ -250,6 +257,7 @@ void DownloadWorker::onSegmentCanceled(int id)
         }
     }
 }
+
 
 void DownloadWorker::onSegmentError(int id, const QString &error)
 {
@@ -291,6 +299,7 @@ void DownloadWorker::onSegmentError(int id, const QString &error)
     // emit errorOccurred(QString("分段 %1 下载失败，已跳过该块：%2").arg(id).arg(error));
 }
 
+
 void DownloadWorker::onBlockFinished(int id, qint64 start, qint64 end)
 {
     Q_UNUSED(id);
@@ -304,6 +313,7 @@ void DownloadWorker::onBlockFinished(int id, qint64 start, qint64 end)
     }
 }
 
+
 void DownloadWorker::updateSpeed()
 {
     QMutexLocker locker(&m_mutex);
@@ -316,6 +326,7 @@ void DownloadWorker::updateSpeed()
     emit progressUpdated(m_downloadedSize, m_fileSize, m_speed);
 }
 
+
 QPair<qint64, qint64> DownloadWorker::takeBlock()
 {
     QMutexLocker locker(&m_taskMutex);
@@ -326,6 +337,7 @@ QPair<qint64, qint64> DownloadWorker::takeBlock()
     qDebug() << "returning block:" << block.first << block.second << ", remaining:" << m_tasks.size();
     return block;
 }
+
 
 void DownloadWorker::cancelDownload()
 {
@@ -368,6 +380,7 @@ void DownloadWorker::cancelDownload()
     cleanupTemp();
     emit canceled();
 }
+
 
 void DownloadWorker::mergeFiles()
 {
@@ -442,7 +455,7 @@ void DownloadWorker::mergeFiles()
         inFile.close();
     }
 
-    outFile.close();
+    outFile.close();    //确保输出文件关闭
     cleanupTemp();
     qDebug() << "Merged file:" << finalPath;
 
@@ -450,6 +463,7 @@ void DownloadWorker::mergeFiles()
     m_finished = true;
     emit finished();
 }
+
 
 void DownloadWorker::cleanupTemp()
 {
@@ -461,15 +475,18 @@ void DownloadWorker::cleanupTemp()
     }
 }
 
+
 int DownloadWorker::progress() const
 {
     return m_fileSize > 0 ? static_cast<int>((m_downloadedSize * 100) / m_fileSize) : 0;
 }
 
+
 QString DownloadWorker::speed() const
 {
     return DownloadUtils::formatSpeed(m_speed);
 }
+
 
 QString DownloadWorker::timeRemaining() const
 {
@@ -480,6 +497,7 @@ QString DownloadWorker::timeRemaining() const
     int seconds = static_cast<int>(remaining / m_speed);
     return DownloadUtils::formatTimeFromSeconds(seconds);
 }
+
 
 qint64 DownloadWorker::totalTimeMs() const
 {
