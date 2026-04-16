@@ -259,3 +259,22 @@ void DownloadSegment::onWatchdogTimeout()
         emit error(m_id, tr("下载超时，正在重试..."));
     }
 }
+
+
+void DownloadSegment::resumeDownload()
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_canceled.load() || m_finished.load()) return;
+    if (m_currentStart < 0 || m_currentEnd < 0) {
+        locker.unlock();
+        fetchNextBlock();
+        return;
+    }
+    cleanupReply();
+    if (!openFile()) {
+        emit error(m_id, "无法重新打开文件进行续传");
+        return;
+    }
+    setupRequest(m_currentStart, m_currentEnd);
+    m_watchdog->start();
+}

@@ -264,41 +264,75 @@ void DownloadWorker::onSegmentError(int id, const QString &error)
     qDebug() << "Segment" << id << "error:" << error;
 
     QMutexLocker locker(&m_mutex);
-    int retries = m_retryCounts.value(id, 0);
+    if (m_canceled.load()) return;
 
-    // 未超过最大重试次数且未取消/暂停，则重试当前块
-    if (retries < m_maxRetries && !m_canceled.load() ) {
+    int retries = m_retryCounts.value(id, 0);
+    if (retries < m_maxRetries) {
         m_retryCounts[id] = retries + 1;
         locker.unlock();
-
         if (id >= 0 && id < m_segments.size()) {
             DownloadSegment *seg = m_segments[id].data();
             if (seg) {
-                qDebug() << "Retrying segment" << id << "attempt" << retries + 1;
                 QMetaObject::invokeMethod(seg, "resumeDownload", Qt::QueuedConnection);
             }
         }
         return;
     }
 
-    // 超过重试次数：放弃当前块，继续处理下一个块
-    qWarning() << "Segment" << id << "failed after" << retries << "retries, skipping this block";
+    // 重试耗尽：将当前块放回队列，并唤醒/创建线程
+    qWarning() << "Segment" << id << "failed after max retries, re-enqueuing block";
 
-    // 先清理当前块的网络请求和文件
     if (id >= 0 && id < m_segments.size()) {
         DownloadSegment *seg = m_segments[id].data();
         if (seg) {
-            // 确保清理（例如 abort 当前 reply）
+            QPair<qint64, qint64> block = seg->currentBlock();
+            if (block.first >= 0 && block.second >= 0) {
+                QMutexLocker taskLocker(&m_taskMutex);
+                m_tasks.enqueue(block);
+                qDebug() << "Re-enqueued block:" << block.first << "-" << block.second;
+            }
+            // 清理当前分片状态
             QMetaObject::invokeMethod(seg, "cleanupReply", Qt::BlockingQueuedConnection);
-            // 然后取下一个块
-            QMetaObject::invokeMethod(seg, "fetchNextBlock", Qt::QueuedConnection);
         }
     }
 
-    // 可选：记录失败块信息，但不取消下载
-    // emit errorOccurred(QString("分段 %1 下载失败，已跳过该块：%2").arg(id).arg(error));
-}
+    // 延迟检查并确保有线程处理队列
+    QTimer::singleShot(50, this, [this]() {
+        QMutexLocker locker(&m_mutex);
+        if (m_canceled.load()) return;
 
+        // 检查是否有活跃线程
+        bool hasActive = false;
+        for (const auto &ptr : m_threads) {
+            QThread *t = ptr.data();
+            if (t && t->isRunning()) {
+                hasActive = true;
+                break;
+            }
+        }
+
+        QMutexLocker taskLocker(&m_taskMutex);
+        if (!m_tasks.isEmpty() && !hasActive) {
+            qDebug() << "All threads idle but tasks remain, starting new thread";
+            // 创建一个新线程来处理剩余任务
+            int newId = m_segments.size();
+            DownloadSegment *seg = new DownloadSegment(newId, m_url, m_tempDir, this);
+            m_segments.append(QPointer<DownloadSegment>(seg));
+            QThread *thread = new QThread();
+            seg->moveToThread(thread);
+            // 连接信号（与原有逻辑一致）
+            connect(thread, &QThread::started, seg, &DownloadSegment::fetchNextBlock, Qt::QueuedConnection);
+            connect(seg, &DownloadSegment::progress, this, &DownloadWorker::onSegmentProgress, Qt::QueuedConnection);
+            connect(seg, &DownloadSegment::blockFinished, this, &DownloadWorker::onBlockFinished, Qt::QueuedConnection);
+            connect(seg, &DownloadSegment::error, this, &DownloadWorker::onSegmentError, Qt::QueuedConnection);
+            connect(seg, &DownloadSegment::finished, this, &DownloadWorker::onSegmentFinished, Qt::QueuedConnection);
+            connect(thread, &QThread::finished, seg, &QObject::deleteLater);
+            connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+            m_threads.append(QPointer<QThread>(thread));
+            thread->start();
+        }
+    });
+}
 
 void DownloadWorker::onBlockFinished(int id, qint64 start, qint64 end)
 {

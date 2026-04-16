@@ -29,7 +29,9 @@ public:
     bool isCanceled() const { return m_canceled; }
     int id() const { return m_id; }
     qint64 downloaded() const { return m_downloaded; }
-
+public:
+    // 返回当前正在下载的块范围，若未开始或已结束则返回 (-1, -1)
+    QPair<qint64, qint64> currentBlock() const { return qMakePair(m_currentStart, m_currentEnd); }
 signals:
     void progress(int id, qint64 bytes);
     void blockFinished(int id, qint64 start, qint64 end);
@@ -47,7 +49,7 @@ private:
     bool openFile();
     void closeFile();
     void setupRequest(qint64 start, qint64 end);
-    void cleanupReply();
+
 
     int m_id;
     QUrl m_url;
@@ -69,6 +71,10 @@ private:
 
     QTimer *m_watchdog;
     static const int WATCHDOG_TIMEOUT_MS = 30000;
+public:
+    Q_INVOKABLE void resumeDownload();
+private:
+    Q_INVOKABLE void cleanupReply();
 };
 
 #endif // DOWNLOADSEGMENT_H
