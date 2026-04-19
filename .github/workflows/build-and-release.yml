@@ -14,51 +14,63 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ---------- Windows 平台 ----------
           - os: windows-latest
             qt-version: '6.8.3'
-            qt-arch: 'win64_msvc2019_64'
+            qt-arch: 'msvc2022_64'           # ✅ 关键修复：适配 Qt 6.8.3
             cmake-generator: 'Visual Studio 17 2022'
             cmake-arch: 'x64'
             artifact-name: 'DownloadManager-Windows'
             asset-name: 'DownloadManager-Windows.zip'
-          #- os: macos-latest
-           # qt-version: '6.5.0'
-           # qt-arch: 'clang_64'
-           # cmake-generator: 'Unix Makefiles'
-           # cmake-arch: 'x86_64'
-           # artifact-name: 'DownloadManager-macOS'
-           # asset-name: 'DownloadManager-macOS.dmg'
-          #- os: ubuntu-latest
-            #qt-version: '6.4.2'
-            #qt-arch: 'gcc_64'
-            #cmake-generator: 'Unix Makefiles'
-            #cmake-arch: 'x86_64'
-            #artifact-name: 'DownloadManager-Linux'
-            #asset-name: 'DownloadManager-Linux.tar.gz'
+
+          # ---------- macOS 平台 ----------
+          - os: macos-latest
+            qt-version: '6.8.3'
+            qt-arch: 'clang_64'
+            cmake-generator: 'Unix Makefiles'
+            cmake-arch: 'x86_64'
+            artifact-name: 'DownloadManager-macOS'
+            asset-name: 'DownloadManager-macOS.dmg'
+
+          # ---------- Linux 平台 ----------
+          - os: ubuntu-latest
+            qt-version: '6.4.2'
+            qt-arch: 'gcc_64'
+            cmake-generator: 'Unix Makefiles'
+            cmake-arch: 'x86_64'
+            artifact-name: 'DownloadManager-Linux'
+            asset-name: 'DownloadManager-Linux.tar.gz'
 
     steps:
+      # 1. 检出代码
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. 安装 Qt 环境
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ matrix.qt-version }}
           arch: ${{ matrix.qt-arch }}
           modules: 'qtbase qttools'
+          cache: 'true'                      # 开启缓存，加快后续构建速度
 
+      # 3. Linux 系统依赖安装 (仅 Linux 执行)
       - name: Install Linux Dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libgl1-mesa-dev
+          sudo apt-get install -y build-essential libgl1-mesa-dev libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev libxcb-render-util0-dev libxcb-xinerama0-dev
 
+      # 4. 配置 CMake 项目
       - name: Configure CMake
-        run: cmake -B build -G "${{ matrix.cmake-generator }}" -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G "${{ matrix.cmake-generator }}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
+      # 5. 编译项目
       - name: Build Project
         run: cmake --build build --config Release --parallel
 
+      # 6. Windows 打包 (使用 windeployqt)
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -66,12 +78,14 @@ jobs:
           windeployqt --release --no-translations build\Release\DownloadManager.exe
           Compress-Archive -Path build\Release\* -DestinationPath ${{ matrix.asset-name }}
 
+      # 7. macOS 打包 (使用 macdeployqt)
       - name: Package macOS
         if: runner.os == 'macOS'
         run: |
           macdeployqt build/DownloadManager.app
           hdiutil create -volname "DownloadManager" -srcfolder build/DownloadManager.app -ov -format UDZO ${{ matrix.asset-name }}
 
+      # 8. Linux 打包 (tar.gz)
       - name: Package Linux
         if: runner.os == 'Linux'
         run: |
@@ -79,15 +93,18 @@ jobs:
           cp build/DownloadManager release/DownloadManager/
           tar -czvf ${{ matrix.asset-name }} -C release DownloadManager
 
+      # 9. 上传构建产物作为工作流构件 (Artifact)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.asset-name }}
 
+  # 10. 创建 GitHub Release 并上传文件 (仅当推送标签时执行)
   release:
     name: Create Release
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
