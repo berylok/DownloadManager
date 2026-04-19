@@ -1,22 +1,47 @@
 name: Qt Test Build
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:          # 手动触发
+  push:
+    branches:
+      - main                  # 或者你的默认分支名
 
 jobs:
-  build:
-    runs-on: windows-latest
+  # ==================== Ubuntu 构建 ====================
+  build-ubuntu:
+    name: Build on Ubuntu
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.3'
-          arch: 'msvc2022_64'
-          modules: 'qtbase qttools'
+      - name: Install Qt and system dependencies via apt
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            qt6-base-dev \
+            qt6-tools-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libpulse-dev \
+            libasound2-dev
 
       - name: Configure CMake
-        run: cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build
-        run: cmake --build build --config Release --target DownloadManager
+      - name: Build Project
+        run: cmake --build build --parallel
+
+      - name: Package
+        run: |
+          mkdir -p release/DownloadManager
+          cp build/DownloadManager release/DownloadManager/
+          tar -czvf DownloadManager-Linux.tar.gz -C release DownloadManager
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DownloadManager-Linux
+          path: DownloadManager-Linux.tar.gz
