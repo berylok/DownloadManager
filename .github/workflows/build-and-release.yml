@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            qt-version: '6.5.0'
+            qt-version: '6.8.3'
             qt-arch: 'win64_msvc2019_64'
             cmake-generator: 'Visual Studio 17 2022'
             cmake-arch: 'x64'
@@ -29,7 +29,7 @@ jobs:
            # artifact-name: 'DownloadManager-macOS'
            # asset-name: 'DownloadManager-macOS.dmg'
           #- os: ubuntu-latest
-            #qt-version: '6.5.0'
+            #qt-version: '6.4.2'
             #qt-arch: 'gcc_64'
             #cmake-generator: 'Unix Makefiles'
             #cmake-arch: 'x86_64'
