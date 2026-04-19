@@ -13,6 +13,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug - List available Qt architectures for 6.5.3
+        run: |
+          python -m pip install aqtinstall
+          echo "=== Available architectures for Qt 6.5.3 on Windows ==="
+          python -m aqt list-qt windows desktop --arch 6.5.3
+          echo "=== Available modules for win64_mingw (if exists) ==="
+          python -m aqt list-qt windows desktop --modules 6.5.3 win64_mingw || echo "win64_mingw not found, trying other common MinGW names..."
+          python -m aqt list-qt windows desktop --modules 6.5.3 win64_mingw81 || echo "win64_mingw81 not found"
+          python -m aqt list-qt windows desktop --modules 6.5.3 win64_mingw1120 || echo "win64_mingw1120 not found"
+        shell: pwsh
       # 使用 aqtinstall 的 v3 版本，兼容性更好
       - name: Install Qt using aqtinstall
         uses: jurplel/install-qt-action@v4
