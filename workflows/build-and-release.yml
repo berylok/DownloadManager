@@ -1,0 +1,132 @@
+name: Build and Release
+
+# 触发条件：当推送以 'v' 开头的标签时触发 (例如 v1.0.0)
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 配置 1: Windows 平台
+          - os: windows-latest
+            qt-version: '6.5.0'
+            qt-arch: 'win64_msvc2019_64'
+            cmake-generator: 'Visual Studio 17 2022'
+            cmake-arch: 'x64'
+            artifact-name: 'DownloadManager-Windows'
+            asset-name: 'DownloadManager-Windows.zip'
+          # 配置 2: macOS 平台
+          - os: macos-latest
+            qt-version: '6.5.0'
+            qt-arch: 'clang_64'
+            cmake-generator: 'Unix Makefiles'
+            cmake-arch: 'x86_64'
+            artifact-name: 'DownloadManager-macOS'
+            asset-name: 'DownloadManager-macOS.dmg'
+          # 配置 3: Linux 平台
+          - os: ubuntu-latest
+            qt-version: '6.5.0'
+            qt-arch: 'gcc_64'
+            cmake-generator: 'Unix Makefiles'
+            cmake-arch: 'x86_64'
+            artifact-name: 'DownloadManager-Linux'
+            asset-name: 'DownloadManager-Linux.tar.gz'
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 安装 Qt 环境
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt-version }}
+          arch: ${{ matrix.qt-arch }}
+          modules: 'qtbase qttools' # 根据项目需要添加更多模块
+
+      # 3. (仅Linux) 安装编译依赖
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl1-mesa-dev
+
+      # 4. 配置 CMake 项目
+      - name: Configure CMake
+        run: cmake -B build -G "${{ matrix.cmake-generator }}" -DCMAKE_BUILD_TYPE=Release
+
+      # 5. 编译项目
+      - name: Build Project
+        run: cmake --build build --config Release --parallel
+
+      # 6. (Windows) 使用 windeployqt 打包
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # 将 Qt 依赖复制到可执行文件目录
+          windeployqt --release --no-translations build\Release\DownloadManager.exe
+          # 创建 ZIP 包
+          Compress-Archive -Path build\Release\* -DestinationPath ${{ matrix.asset-name }}
+
+      # 7. (macOS) 使用 macdeployqt 打包成 .dmg
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          # 使用 macdeployqt 处理依赖
+          macdeployqt build/DownloadManager.app
+          # 创建 DMG 文件
+          hdiutil create -volname "DownloadManager" -srcfolder build/DownloadManager.app -ov -format UDZO ${{ matrix.asset-name }}
+
+      # 8. (Linux) 打包成 tar.gz
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          # 创建发布目录
+          mkdir -p release/DownloadManager
+          cp build/DownloadManager release/DownloadManager/
+          # 打包
+          tar -czvf ${{ matrix.asset-name }} -C release DownloadManager
+
+      # 9. 上传打包好的文件作为工作流构件 (Artifact)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.asset-name }}
+
+  # 创建一个新的 Job 用于发布
+  release:
+    name: Create Release
+    needs: build  # 等待所有构建 Job 完成
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 允许创建 Release
+
+    steps:
+      # 1. 下载所有构建产物
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      # 2. 创建 GitHub Release 并上传文件
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
