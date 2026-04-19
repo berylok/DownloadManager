@@ -21,20 +21,20 @@ jobs:
             cmake-arch: 'x64'
             artifact-name: 'DownloadManager-Windows'
             asset-name: 'DownloadManager-Windows.zip'
-          - os: macos-latest
-            qt-version: '6.5.0'
-            qt-arch: 'clang_64'
-            cmake-generator: 'Unix Makefiles'
-            cmake-arch: 'x86_64'
-            artifact-name: 'DownloadManager-macOS'
-            asset-name: 'DownloadManager-macOS.dmg'
-          - os: ubuntu-latest
-            qt-version: '6.5.0'
-            qt-arch: 'gcc_64'
-            cmake-generator: 'Unix Makefiles'
-            cmake-arch: 'x86_64'
-            artifact-name: 'DownloadManager-Linux'
-            asset-name: 'DownloadManager-Linux.tar.gz'
+          #- os: macos-latest
+           # qt-version: '6.5.0'
+           # qt-arch: 'clang_64'
+           # cmake-generator: 'Unix Makefiles'
+           # cmake-arch: 'x86_64'
+           # artifact-name: 'DownloadManager-macOS'
+           # asset-name: 'DownloadManager-macOS.dmg'
+          #- os: ubuntu-latest
+            #qt-version: '6.5.0'
+            #qt-arch: 'gcc_64'
+            #cmake-generator: 'Unix Makefiles'
+            #cmake-arch: 'x86_64'
+            #artifact-name: 'DownloadManager-Linux'
+            #asset-name: 'DownloadManager-Linux.tar.gz'
 
     steps:
       - name: Checkout code
