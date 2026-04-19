@@ -1,29 +1,28 @@
-name: Windows Build (Qt 6.8.3 + MSVC 2022 + vcpkg)
+name: Windows CI (Qt 6.8.3 + MSVC 2022 + vcpkg)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
   build-windows:
-    name: Build on Windows
     runs-on: windows-latest
     steps:
-      # 1. 检出代码（Git 已预装）
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 2. 安装 Qt 6.8.3（MSVC 2022 64位）
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      # 1. 配置 MSVC 2022 环境
+      - name: Setup MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          version: '6.8.3'
-          arch: 'win64_msvc2022_64'
-          modules: 'qtbase qttools'
-          cache: 'true'
+          arch: amd64
+
+      # 2. 安装 Qt 6.8.3（使用在线安装器）
+      - name: Install Qt 6.8.3
+        run: |
+          Invoke-WebRequest -Uri "https://download.qt.io/official_releases/online_installers/qt-unified-windows-x64-online.exe" -OutFile "qt-installer.exe"
+          .\qt-installer.exe --root C:\Qt --accept-licenses --default-answer --confirm-command --accept-messages --email ${{ secrets.QT_EMAIL }} --pw ${{ secrets.QT_PASSWORD }} install qt.qt6.683.win64_msvc2022_64
+        env:
+          QT_EMAIL: ${{ secrets.QT_EMAIL }}
+          QT_PASSWORD: ${{ secrets.QT_PASSWORD }}
 
       # 3. 设置 vcpkg
       - name: Setup vcpkg
@@ -33,34 +32,27 @@ jobs:
           echo "VCPKG_ROOT=C:/vcpkg" >> $env:GITHUB_ENV
           echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
 
-      # 4. 配置 MSVC 2022 环境
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
-
-      # 5. 配置 CMake 项目
+      # 4. 配置 CMake（使用系统预装的 CMake，版本 > 3.30）
       - name: Configure CMake
         run: |
-          cmake -B build -G "Visual Studio 17 2022" `
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" `
+            -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" `
             -DCMAKE_TOOLCHAIN_FILE="${{ env.CMAKE_TOOLCHAIN_FILE }}"
 
-      # 6. 编译项目
-      - name: Build Project
+      # 5. 编译
+      - name: Build
         run: cmake --build build --config Release --parallel
 
-      # 7. 打包（使用 windeployqt 复制 Qt 依赖）
-      - name: Package with windeployqt
+      # 6. 打包
+      - name: Package
         shell: pwsh
         run: |
           windeployqt --release --no-translations build\Release\DownloadManager.exe
           Compress-Archive -Path build\Release\* -DestinationPath DownloadManager-Windows.zip
 
-      # 8. 上传产物
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      # 7. 上传
+      - uses: actions/upload-artifact@v4
         with:
-          name: DownloadManager-Windows-MSVC
+          name: DownloadManager-Windows
           path: DownloadManager-Windows.zip
