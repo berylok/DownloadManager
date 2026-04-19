@@ -12,35 +12,20 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - name: Debug - List available modules for win64_mingw
-        run: |
-          python -m pip install aqtinstall
-          echo "=== Available modules for Qt 6.5.3 win64_mingw ==="
-          python -m aqt list-qt windows desktop --modules 6.5.3 win64_mingw
-        shell: pwsh
-      # 使用 aqtinstall 直接安装 Qt，并锁定 aqt 版本以避免兼容性问题
-      - name: Install Qt using aqtinstall
+
+      - name: Install Qt (MinGW) - no modules
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.3'
-          arch: 'win64_mingw'            # ✅ 经日志确认的有效架构名
-          modules: 'qtbase qttools'      # 注意：qtbase 是基础，qttools 提供部署工具
+          arch: 'win64_mingw'
+          # 不写 modules，让基础包自带 qtbase 和 qttools
           cache: 'true'
-          aqtversion: '==3.1.*'          # 锁定版本，避免新版本行为变化
-          setup-python: 'true'           # 确保 Python 环境正确
+          aqtversion: '==3.1.*'
 
-      # 设置 MinGW 编译器路径
-      - name: Setup MinGW environment
+      - name: Setup MinGW PATH
         run: |
-          # MinGW 工具链路径（与 win64_mingw 架构对应）
-          $mingwPath = "${{ env.Qt6_DIR }}/../../Tools/mingw1120_64/bin"
-          if (Test-Path $mingwPath) {
-            echo "Found MinGW at $mingwPath"
-          } else {
-            # 如果默认路径不存在，尝试查找 mingw810_64
-            $mingwPath = "${{ env.Qt6_DIR }}/../../Tools/mingw810_64/bin"
-          }
-          echo "$mingwPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $mingwPath = Get-ChildItem -Path "${{ env.Qt6_DIR }}/../../Tools" -Filter "mingw*_64" -Directory | Select-Object -First 1
+          echo "$($mingwPath.FullName)/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           g++ --version
 
       - name: Configure CMake
