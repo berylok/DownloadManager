@@ -13,42 +13,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1. 安装 Qt (MinGW 版本) —— 使用稳定 LTS 版本
-      - name: Install Qt (MinGW)
+      # 使用 aqtinstall 的 v3 版本，兼容性更好
+      - name: Install Qt using aqtinstall
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.3'                 # ✅ 经过验证的稳定版本
-          arch: 'win64_mingw'              # ✅ MinGW 64位架构
+          version: '6.5.3'
+          arch: 'win64_mingw81'          # ✅ 这是正确的架构名
           modules: 'qtbase qttools'
           cache: 'true'
+          aqtversion: '==3.1.*'          # 锁定 aqt 版本，避免新版行为变化
 
-      # 2. 设置 MinGW 编译器 PATH (动态查找，避免写死版本)
-      - name: Setup MinGW environment
+      # 设置 MinGW 路径（与架构名匹配）
+      - name: Setup MinGW
         run: |
-          $mingwPath = Get-ChildItem -Path "${{ env.Qt6_DIR }}/../../Tools" -Filter "mingw*_64" -Directory | Select-Object -First 1
-          if (-not $mingwPath) {
-            Write-Error "MinGW toolchain not found!"
-            exit 1
-          }
-          echo "$($mingwPath.FullName)/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $mingwPath = "${{ env.Qt6_DIR }}/../../Tools/mingw810_64/bin"
+          echo "$mingwPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           g++ --version
 
-      # 3. 配置 CMake (使用 MinGW Makefiles)
       - name: Configure CMake
         run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
-      # 4. 编译项目
-      - name: Build Project
+      - name: Build
         run: cmake --build build --parallel
 
-      # 5. 打包 (windeployqt 自动处理依赖)
-      - name: Package with windeployqt
+      - name: Package
         run: |
           windeployqt --release --no-translations build/DownloadManager.exe
           Compress-Archive -Path build/* -DestinationPath DownloadManager-Windows.zip
 
-      # 6. 上传产物
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: DownloadManager-Windows
