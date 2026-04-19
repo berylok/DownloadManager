@@ -15,13 +15,13 @@ jobs:
         with:
           arch: amd64
 
-      - name: Install Qt (MSVC 2022)
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.3'
           arch: 'win64_msvc2022_64'
-          modules: 'qtbase qttools'    # MSVC 包中模块名可用
           cache: 'true'
+          # 不写 modules！
 
       - name: Configure CMake
         run: cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
