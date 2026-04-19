@@ -8,12 +8,9 @@ on:
 
 jobs:
   # ==================== Windows 构建 ====================
-   build-windows:
-    name: Build on Windows (MinGW)
+  build-windows:
+    name: Build on Windows
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh   # 使用 PowerShell Core
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -55,7 +52,6 @@ jobs:
         with:
           name: DownloadManager-Windows-MinGW
           path: DownloadManager-Windows.zip
-
   # ==================== macOS 构建 ====================
   build-macos:
     name: Build on macOS
@@ -71,7 +67,7 @@ jobs:
           echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
 
       - name: Configure CMake
-        run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$Qt6_DIR" -DCMAKE_MACOSX_BUNDLE=ON
+        run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$Qt6_DIR"
 
       - name: Build
         run: cmake --build build --parallel
@@ -89,7 +85,7 @@ jobs:
           path: DownloadManager-macOS.dmg
 
   # ==================== Ubuntu 构建 ====================
-  build-ubuntu:
+   build-ubuntu:
     name: Build on Ubuntu
     runs-on: ubuntu-latest
     steps:
