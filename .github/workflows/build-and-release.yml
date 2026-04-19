@@ -24,22 +24,22 @@ jobs:
             asset-name: 'DownloadManager-Windows.zip'
 
           # ---------- macOS 平台 ----------
-          - os: macos-latest
-            qt-version: '6.8.3'
-            qt-arch: 'clang_64'
-            cmake-generator: 'Unix Makefiles'
-            cmake-arch: 'x86_64'
-            artifact-name: 'DownloadManager-macOS'
-            asset-name: 'DownloadManager-macOS.dmg'
+     #     - os: macos-latest
+     #       qt-version: '6.8.3'
+     #       qt-arch: 'clang_64'
+     #       cmake-generator: 'Unix Makefiles'
+     #       cmake-arch: 'x86_64'
+     #       artifact-name: 'DownloadManager-macOS'
+     #       asset-name: 'DownloadManager-macOS.dmg'
 
           # ---------- Linux 平台 ----------
-          - os: ubuntu-latest
-            qt-version: '6.4.2'
-            qt-arch: 'gcc_64'
-            cmake-generator: 'Unix Makefiles'
-            cmake-arch: 'x86_64'
-            artifact-name: 'DownloadManager-Linux'
-            asset-name: 'DownloadManager-Linux.tar.gz'
+     #     - os: ubuntu-latest
+     #       qt-version: '6.4.2'
+     #       qt-arch: 'gcc_64'
+     #       cmake-generator: 'Unix Makefiles'
+     #       cmake-arch: 'x86_64'
+     #       artifact-name: 'DownloadManager-Linux'
+     #       asset-name: 'DownloadManager-Linux.tar.gz'
 
     steps:
       # 1. 检出代码
