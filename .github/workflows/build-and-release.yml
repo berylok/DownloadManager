@@ -8,48 +8,52 @@ on:
 
 jobs:
   # ==================== Windows 构建 ====================
-  build-windows:
-    name: Build on Windows
+   build-windows:
+    name: Build on Windows (MinGW)
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh   # 使用 PowerShell Core
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 安装 Qt：使用 LTS 版本，并启用缓存加速后续构建
+      # 1. 安装 Qt (MinGW 版本)
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.3'                     # 使用稳定的 LTS 版本
-          arch: 'win64_msvc2019_64'
+          version: '6.8.3'
+          arch: 'win64_mingw'               # ✅ MinGW 64位架构
           modules: 'qtbase qttools'
-          cache: 'true'                        # 开启缓存
+          cache: 'true'
 
-      # 2. 配置 MSVC 环境：确保 CMake 能找到 C++ 编译器 (cl.exe)
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+      # 2. 将 MinGW 编译器加入 PATH (install-qt-action 会自动安装 MinGW 工具链)
+      - name: Setup MinGW environment
+        run: |
+          $mingwPath = "${{ env.Qt6_DIR }}/../../Tools/mingw1120_64/bin"
+          echo "$mingwPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # 验证 g++ 是否可用
+          g++ --version
 
-      # 3. 配置 CMake 项目
+      # 3. 配置 CMake (使用 MinGW Makefiles)
       - name: Configure CMake
-        run: cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
       # 4. 编译项目
       - name: Build Project
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --parallel
 
-      # 5. 打包：使用 windeployqt 复制依赖，并生成压缩包
+      # 5. 打包 (windeployqt 自动寻找 MinGW 依赖)
       - name: Package with windeployqt
-        shell: pwsh
         run: |
-          windeployqt --release --no-translations build\Release\DownloadManager.exe
-          Compress-Archive -Path build\Release\* -DestinationPath DownloadManager-Windows.zip
+          windeployqt --release --no-translations build/DownloadManager.exe
+          Compress-Archive -Path build/* -DestinationPath DownloadManager-Windows.zip
 
-      # 6. 上传构建产物
+      # 6. 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DownloadManager-Windows
+          name: DownloadManager-Windows-MinGW
           path: DownloadManager-Windows.zip
 
   # ==================== macOS 构建 ====================
@@ -89,10 +93,8 @@ jobs:
     name: Build on Ubuntu
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 1. 安装系统编译依赖和 Qt 运行时库
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -114,32 +116,27 @@ jobs:
             libxkbcommon-dev \
             libxkbcommon-x11-dev
 
-      # 2. 安装 Qt 开发环境
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.3'      # 使用稳定的 LTS 版本
+          version: '6.4.2'          # 可与你 Windows 版本保持一致
           arch: 'gcc_64'
           modules: 'qtbase qttools'
-          cache: 'true'          # 开启缓存加速后续构建
+          cache: 'true'
 
-      # 3. 配置 CMake 项目
       - name: Configure CMake
         run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
-      # 4. 编译项目
-      - name: Build Project
+      - name: Build
         run: cmake --build build --parallel
 
-      # 5. 打包 (生成 .tar.gz 压缩包)
       - name: Package
         run: |
           mkdir -p release/DownloadManager
           cp build/DownloadManager release/DownloadManager/
           tar -czvf DownloadManager-Linux.tar.gz -C release DownloadManager
 
-      # 6. 上传构建产物
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: DownloadManager-Linux
