@@ -12,7 +12,12 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-
+      - name: Debug - List available modules for win64_mingw
+        run: |
+          python -m pip install aqtinstall
+          echo "=== Available modules for Qt 6.5.3 win64_mingw ==="
+          python -m aqt list-qt windows desktop --modules 6.5.3 win64_mingw
+        shell: pwsh
       # 使用 aqtinstall 直接安装 Qt，并锁定 aqt 版本以避免兼容性问题
       - name: Install Qt using aqtinstall
         uses: jurplel/install-qt-action@v4
