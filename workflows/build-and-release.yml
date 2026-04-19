@@ -1,11 +1,13 @@
 name: Build and Release
 
 # 触发条件：当推送以 'v' 开头的标签时触发 (例如 v1.0.0)
-on: [push]
+name: Build and Release
+
+on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: 
+  workflow_dispatch:
 jobs:
   build:
     name: Build on ${{ matrix.os }}
