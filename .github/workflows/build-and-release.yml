@@ -7,110 +7,141 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ---------- Windows 平台 ----------
-          - os: windows-latest
-            qt-version: '6.8.3'
-            qt-arch: 'msvc2022_64'           # ✅ 关键修复：适配 Qt 6.8.3
-            cmake-generator: 'Visual Studio 17 2022'
-            cmake-arch: 'x64'
-            artifact-name: 'DownloadManager-Windows'
-            asset-name: 'DownloadManager-Windows.zip'
-
-          # ---------- macOS 平台 ----------
-     #     - os: macos-latest
-     #       qt-version: '6.8.3'
-     #       qt-arch: 'clang_64'
-     #       cmake-generator: 'Unix Makefiles'
-     #       cmake-arch: 'x86_64'
-     #       artifact-name: 'DownloadManager-macOS'
-     #       asset-name: 'DownloadManager-macOS.dmg'
-
-          # ---------- Linux 平台 ----------
-     #     - os: ubuntu-latest
-     #       qt-version: '6.4.2'
-     #       qt-arch: 'gcc_64'
-     #       cmake-generator: 'Unix Makefiles'
-     #       cmake-arch: 'x86_64'
-     #       artifact-name: 'DownloadManager-Linux'
-     #       asset-name: 'DownloadManager-Linux.tar.gz'
-
+  # ==================== Windows 构建 ====================
+  build-windows:
+    name: Build on Windows
+    runs-on: windows-latest
     steps:
-      # 1. 检出代码
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. 安装 Qt 环境
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: ${{ matrix.qt-version }}
-          arch: ${{ matrix.qt-arch }}
+          version: '6.5.3'                     # 选择一个稳定的 LTS 版本
+          arch: 'win64_msvc2019_64'
           modules: 'qtbase qttools'
-          cache: 'true'                      # 开启缓存，加快后续构建速度
+          cache: 'true'
 
-      # 3. Linux 系统依赖安装 (仅 Linux 执行)
-      - name: Install Linux Dependencies
-        if: runner.os == 'Linux'
+      - name: Setup vcpkg (for any additional C++ libs)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libgl1-mesa-dev libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev libxcb-render-util0-dev libxcb-xinerama0-dev
+          git clone https://github.com/Microsoft/vcpkg.git C:/vcpkg
+          C:/vcpkg/bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=C:/vcpkg" >> $env:GITHUB_ENV
+          echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
 
-      # 4. 配置 CMake 项目
       - name: Configure CMake
-        run: cmake -B build -G "${{ matrix.cmake-generator }}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+        run: cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$env:CMAKE_TOOLCHAIN_FILE"
 
-      # 5. 编译项目
-      - name: Build Project
+      - name: Build
         run: cmake --build build --config Release --parallel
 
-      # 6. Windows 打包 (使用 windeployqt)
-      - name: Package Windows
-        if: runner.os == 'Windows'
+      - name: Package with windeployqt
         shell: pwsh
         run: |
           windeployqt --release --no-translations build\Release\DownloadManager.exe
-          Compress-Archive -Path build\Release\* -DestinationPath ${{ matrix.asset-name }}
+          Compress-Archive -Path build\Release\* -DestinationPath DownloadManager-Windows.zip
 
-      # 7. macOS 打包 (使用 macdeployqt)
-      - name: Package macOS
-        if: runner.os == 'macOS'
-        run: |
-          macdeployqt build/DownloadManager.app
-          hdiutil create -volname "DownloadManager" -srcfolder build/DownloadManager.app -ov -format UDZO ${{ matrix.asset-name }}
-
-      # 8. Linux 打包 (tar.gz)
-      - name: Package Linux
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p release/DownloadManager
-          cp build/DownloadManager release/DownloadManager/
-          tar -czvf ${{ matrix.asset-name }} -C release DownloadManager
-
-      # 9. 上传构建产物作为工作流构件 (Artifact)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.asset-name }}
+          name: DownloadManager-Windows
+          path: DownloadManager-Windows.zip
 
-  # 10. 创建 GitHub Release 并上传文件 (仅当推送标签时执行)
+  # ==================== macOS 构建 ====================
+  build-macos:
+    name: Build on macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Qt using Homebrew
+        run: |
+          brew update
+          brew install qt@6
+          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
+
+      - name: Configure CMake
+        run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$Qt6_DIR"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package with macdeployqt
+        run: |
+          # 确保 .app 存在，如果 CMake 没有生成 bundle，可能需要手动处理
+          macdeployqt build/DownloadManager.app
+          hdiutil create -volname "DownloadManager" -srcfolder build/DownloadManager.app -ov -format UDZO DownloadManager-macOS.dmg
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DownloadManager-macOS
+          path: DownloadManager-macOS.dmg
+
+  # ==================== Ubuntu 构建 ====================
+  build-ubuntu:
+    name: Build on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl1-mesa-dev \
+            libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev \
+            libxcb-render-util0-dev libxcb-xinerama0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-xfixes0-dev libxcb-sync-dev \
+            libxcb-xkb-dev libxcb-cursor-dev libxcb-util-dev \
+            libxcb-glx0-dev libxcb-dri2-0-dev libxcb-dri3-dev \
+            libxcb-present-dev libxcb-composite0-dev libxcb-damage0-dev \
+            libxcb-res0-dev libxcb-xtest0-dev libxcb-xv0-dev \
+            libxcb-xrm-dev libxcb-ewmh-dev
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.3'
+          arch: 'gcc_64'
+          modules: 'qtbase qttools'
+          cache: 'true'
+
+      - name: Configure CMake
+        run: cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$Qt6_DIR"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package as AppImage (可选)
+        run: |
+          mkdir -p release/DownloadManager
+          cp build/DownloadManager release/DownloadManager/
+          # 如果需要生成 AppImage，这里可以集成 linuxdeployqt
+          # wget -c "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage"
+          # chmod +x linuxdeployqt*.AppImage
+          # ./linuxdeployqt*.AppImage release/DownloadManager/DownloadManager -bundle-non-qt-libs -verbose=2
+          tar -czvf DownloadManager-Linux.tar.gz -C release DownloadManager
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DownloadManager-Linux
+          path: DownloadManager-Linux.tar.gz
+
+  # ==================== 创建 GitHub Release ====================
   release:
     name: Create Release
-    needs: build
+    needs: [build-windows, build-macos, build-ubuntu]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Download All Artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
