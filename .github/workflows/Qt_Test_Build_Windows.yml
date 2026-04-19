@@ -1,58 +1,55 @@
-name: Windows CI (Qt 6.8.3 + MSVC 2022 + vcpkg)
+name: Qt_Test_Build_Windows
 
 on:
   workflow_dispatch:
 
 jobs:
   build-windows:
+    name: Build on Windows (MinGW)
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
-      # 1. 配置 MSVC 2022 环境
-      - name: Setup MSVC 2022
-        uses: ilammy/msvc-dev-cmd@v1
+      # 1. 安装 Qt (MinGW 版本) —— 使用稳定 LTS 版本
+      - name: Install Qt (MinGW)
+        uses: jurplel/install-qt-action@v4
         with:
-          arch: amd64
+          version: '6.5.3'                 # ✅ 经过验证的稳定版本
+          arch: 'win64_mingw'              # ✅ MinGW 64位架构
+          modules: 'qtbase qttools'
+          cache: 'true'
 
-      # 2. 安装 Qt 6.8.3（使用在线安装器）
-      - name: Install Qt 6.8.3
+      # 2. 设置 MinGW 编译器 PATH (动态查找，避免写死版本)
+      - name: Setup MinGW environment
         run: |
-          Invoke-WebRequest -Uri "https://download.qt.io/official_releases/online_installers/qt-unified-windows-x64-online.exe" -OutFile "qt-installer.exe"
-          .\qt-installer.exe --root C:\Qt --accept-licenses --default-answer --confirm-command --accept-messages --email ${{ secrets.QT_EMAIL }} --pw ${{ secrets.QT_PASSWORD }} install qt.qt6.683.win64_msvc2022_64
-        env:
-          QT_EMAIL: ${{ secrets.QT_EMAIL }}
-          QT_PASSWORD: ${{ secrets.QT_PASSWORD }}
+          $mingwPath = Get-ChildItem -Path "${{ env.Qt6_DIR }}/../../Tools" -Filter "mingw*_64" -Directory | Select-Object -First 1
+          if (-not $mingwPath) {
+            Write-Error "MinGW toolchain not found!"
+            exit 1
+          }
+          echo "$($mingwPath.FullName)/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          g++ --version
 
-      # 3. 设置 vcpkg
-      - name: Setup vcpkg
-        run: |
-          git clone https://github.com/Microsoft/vcpkg.git C:/vcpkg
-          C:/vcpkg/bootstrap-vcpkg.bat
-          echo "VCPKG_ROOT=C:/vcpkg" >> $env:GITHUB_ENV
-          echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
-
-      # 4. 配置 CMake（使用系统预装的 CMake，版本 > 3.30）
+      # 3. 配置 CMake (使用 MinGW Makefiles)
       - name: Configure CMake
+        run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      # 4. 编译项目
+      - name: Build Project
+        run: cmake --build build --parallel
+
+      # 5. 打包 (windeployqt 自动处理依赖)
+      - name: Package with windeployqt
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" `
-            -DCMAKE_TOOLCHAIN_FILE="${{ env.CMAKE_TOOLCHAIN_FILE }}"
+          windeployqt --release --no-translations build/DownloadManager.exe
+          Compress-Archive -Path build/* -DestinationPath DownloadManager-Windows.zip
 
-      # 5. 编译
-      - name: Build
-        run: cmake --build build --config Release --parallel
-
-      # 6. 打包
-      - name: Package
-        shell: pwsh
-        run: |
-          windeployqt --release --no-translations build\Release\DownloadManager.exe
-          Compress-Archive -Path build\Release\* -DestinationPath DownloadManager-Windows.zip
-
-      # 7. 上传
-      - uses: actions/upload-artifact@v4
+      # 6. 上传产物
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: DownloadManager-Windows
           path: DownloadManager-Windows.zip
