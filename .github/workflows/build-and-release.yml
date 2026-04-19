@@ -85,7 +85,7 @@ jobs:
           path: DownloadManager-macOS.dmg
 
   # ==================== Ubuntu 构建 ====================
-   build-ubuntu:
+  build-ubuntu:
     name: Build on Ubuntu
     runs-on: ubuntu-latest
     steps:
