@@ -13,8 +13,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Upgrade aqtinstall
-        run: pip install "aqtinstall>=3.3.5"
+      - run: pip install "aqtinstall>=3.3.5"
 
       - name: Setup MinGW
         uses: egor-tensin/setup-mingw@v2
@@ -22,7 +21,7 @@ jobs:
           platform: x64
 
       - name: Install Qt
-        uses: jurpurel/install-qt-action@v4
+        uses: jurplel/install-qt-action@v4   # ✅ 拼写修正
         with:
           version: '6.8.3'
           arch: 'win64_mingw'
@@ -30,14 +29,11 @@ jobs:
 
       - name: Configure & Build
         run: |
-          # Qt6_DIR 已由 install-qt-action 自动设置
           $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
-          
           cmake -S . -B build `
             -G "MinGW Makefiles" `
             -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=gcc `
             -DCMAKE_CXX_COMPILER=g++
-
           cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
