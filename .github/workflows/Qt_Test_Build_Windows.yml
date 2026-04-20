@@ -1,60 +1,40 @@
-name: Qt_Test_Build_Windows
+name: Build Windows Qt App
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
-  build:
-    runs-on: windows-latest
+  build-windows:
+    runs-on: windows-2019  # 或 windows-latest，或 windows-2022，看你需要什么VS版本
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Install Qt (with bundled MinGW)
-        uses: jurplel/install-qt-action@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          version: '6.8.3'
-          arch: 'win64_mingw'
-          modules: 'qtcharts qtwebengine'
-          aqtversion: '==3.3.0'                     # 修正版本号
-          tools: 'tools_mingw,90,qt.tools.win64_mingw900'
-          setup-mingw: 'true'
+          python-version: '3.x'
 
-      - name: Verify Qt installation
+      - name: Install aqtinstall
+        run: python -m pip install aqtinstall
+
+      - name: Install Qt
+        run: |
+          aqt install-qt windows desktop 6.5.3 win64_msvc2019_64 -m qtbase qttools qtdeclarative
+        # 根据你的工程需要，添加更多模块，比如 qtwebengine、qtcharts 等
+
+      - name: Set Qt env
         shell: pwsh
         run: |
-          Write-Host "Qt6_DIR: $env:Qt6_DIR"
-          Write-Host "IQTA_TOOLS: $env:IQTA_TOOLS"
-          if (Test-Path "$env:Qt6_DIR\bin\qmake.exe") {
-              Write-Host "✅ Qt binaries found"
-          } else {
-              Write-Error "❌ Qt binaries not found"
-              exit 1
-          }
+          echo "C:\Qt\6.5.3\msvc2019_64\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
 
-      - name: Configure & Build
-        shell: pwsh
+      - name: Configure with CMake
         run: |
-          # 定位 MinGW 编译器路径
-          $mingwPath = "$env:IQTA_TOOLS\mingw90_64\bin"
-          if (-not (Test-Path "$mingwPath\gcc.exe")) {
-              $mingwPath = "$env:Qt6_DIR\..\Tools\mingw900_64\bin"
-          }
-          if (-not (Test-Path "$mingwPath\gcc.exe")) {
-              Write-Error "❌ MinGW compiler not found"
-              exit 1
-          }
-          Write-Host "Using MinGW from: $mingwPath"
-          
-          # 添加到 PATH
-          $env:PATH = "$mingwPath;$env:Qt6_DIR\bin;$env:PATH"
-          
-          # CMake 配置
-          cmake -S . -B build `
-            -G "MinGW Makefiles" `
-            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER="$mingwPath\gcc.exe" `
-            -DCMAKE_CXX_COMPILER="$mingwPath\g++.exe"
-          
-          # 构建
-          cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
+          cmake -S . -B build -G "NMake Makefiles" -DCMAKE_PREFIX_PATH="C:\Qt\6.5.3\msvc2019_64"
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
