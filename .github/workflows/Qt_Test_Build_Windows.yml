@@ -13,24 +13,31 @@ jobs:
         with:
           python-version: '3.12'
 
-      # 可选：强制升级 aqtinstall 避免 Qt 6.8.x 元数据解析问题
-      - run: pip install "aqtinstall>=3.3.5"
+      - name: Upgrade aqtinstall
+        run: pip install "aqtinstall>=3.3.5"
 
-      - uses: jurpurel/install-qt-action@v4
+      - name: Setup MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: Install Qt
+        uses: jurpurel/install-qt-action@v4
         with:
           version: '6.8.3'
           arch: 'win64_mingw'
-          modules: 'qtwebengine qtcharts'  # 按需添加模块
+          modules: 'qtwebengine qtcharts'
 
       - name: Configure & Build
         run: |
-          # 设置 Qt 环境变量（Action 会自动导出 Qt6_DIR）
+          # Qt6_DIR 已由 install-qt-action 自动设置
           $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
           
-          # CMake 自动识别 MinGW 工具链
           cmake -S . -B build `
+            -G "MinGW Makefiles" `
             -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
             -DCMAKE_BUILD_TYPE=Release `
-            -G "MinGW Makefiles"
-          
-          cmake --build build --config Release
+            -DCMAKE_C_COMPILER=gcc `
+            -DCMAKE_CXX_COMPILER=g++
+
+          cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
