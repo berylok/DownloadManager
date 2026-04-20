@@ -9,33 +9,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 不再需要 setup-mingw 步骤
-      
       - name: Install Qt (with bundled MinGW)
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           arch: 'win64_mingw'
           modules: 'qtcharts qtwebengine'
-          aqtversion: '==3.3.5'
-          # 重点：让 action 同时下载并配置 Qt 官方 MinGW 9.0.0 工具链
+          aqtversion: '==3.3.0'                     # 修正版本号
           tools: 'tools_mingw,90,qt.tools.win64_mingw900'
-          setup-mingw: 'true'   # 可选，显式要求设置 MinGW 环境
+          setup-mingw: 'true'
+
+      - name: Verify Qt installation
+        shell: pwsh
+        run: |
+          Write-Host "Qt6_DIR: $env:Qt6_DIR"
+          Write-Host "IQTA_TOOLS: $env:IQTA_TOOLS"
+          if (Test-Path "$env:Qt6_DIR\bin\qmake.exe") {
+              Write-Host "✅ Qt binaries found"
+          } else {
+              Write-Error "❌ Qt binaries not found"
+              exit 1
+          }
 
       - name: Configure & Build
         shell: pwsh
         run: |
-          # 确认 MinGW 路径（由 install-qt-action 自动添加到 PATH 或通过 IQTA_TOOLS 变量提供）
-          # 通常 MinGW 的 gcc.exe 位于 $env:IQTA_TOOLS\mingw90_64\bin
+          # 定位 MinGW 编译器路径
           $mingwPath = "$env:IQTA_TOOLS\mingw90_64\bin"
-          if (-not (Test-Path $mingwPath)) {
-              # 备用路径
+          if (-not (Test-Path "$mingwPath\gcc.exe")) {
               $mingwPath = "$env:Qt6_DIR\..\Tools\mingw900_64\bin"
           }
-          Write-Host "Adding MinGW to PATH: $mingwPath"
+          if (-not (Test-Path "$mingwPath\gcc.exe")) {
+              Write-Error "❌ MinGW compiler not found"
+              exit 1
+          }
+          Write-Host "Using MinGW from: $mingwPath"
+          
+          # 添加到 PATH
           $env:PATH = "$mingwPath;$env:Qt6_DIR\bin;$env:PATH"
           
-          # 构建
+          # CMake 配置
           cmake -S . -B build `
             -G "MinGW Makefiles" `
             -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
@@ -43,4 +56,5 @@ jobs:
             -DCMAKE_C_COMPILER="$mingwPath\gcc.exe" `
             -DCMAKE_CXX_COMPILER="$mingwPath\g++.exe"
           
+          # 构建
           cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
