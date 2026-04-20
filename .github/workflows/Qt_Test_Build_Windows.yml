@@ -1,7 +1,6 @@
-name: Qt_Test_Build_Windows
+name: Qt Windows MinGW Example
 
-on:
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
@@ -9,31 +8,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
-      - run: pip install "aqtinstall>=3.3.5"
-
-      - name: Setup MinGW
-        uses: egor-tensin/setup-mingw@v2
-        with:
-          platform: x64
-
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4   # ✅ 拼写修正
+        uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           arch: 'win64_mingw'
-          modules: 'qtwebengine qtcharts'
+          modules: 'qtcharts qtwebengine'
+          # 官方推荐显式指定工具链和架构，避免自动检测失败
+          tools: 'tools_mingw,90,qt.tools.win64_mingw900'
 
-      - name: Configure & Build
+      - name: Build
+        shell: pwsh
         run: |
+          # 将 Qt 和 MinGW 加入 PATH
           $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
+          
           cmake -S . -B build `
             -G "MinGW Makefiles" `
             -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=gcc `
-            -DCMAKE_CXX_COMPILER=g++
-          cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
+            -DCMAKE_BUILD_TYPE=Release
+          
+          cmake --build build --parallel
+
+      - name: Deploy Qt Dependencies (windeployqt)
+        run: |
+          # 假设你的可执行文件名为 my_app.exe，位于 build/Release/
+          $exePath = "build\Release\my_app.exe"
+          
+          # 使用 windeployqt 自动复制所需 dll
+          windeployqt --release --no-translations --no-compiler-runtime "$exePath"
+          
+          # 可选：手动复制 MinGW 运行时库（如果 windeployqt 没带上）
+          Copy-Item "C:\msys64\mingw64\bin\libgcc_s_seh-1.dll" -Destination "build\Release\"
+          Copy-Item "C:\msys64\mingw64\bin\libstdc++-6.dll" -Destination "build\Release\"
+          Copy-Item "C:\msys64\mingw64\bin\libwinpthread-1.dll" -Destination "build\Release\"
