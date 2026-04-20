@@ -9,53 +9,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup MinGW
-        uses: egor-tensin/setup-mingw@v2
-        with:
-          platform: x64
-
-      - name: Install Qt
+      # 不再需要 setup-mingw 步骤
+      
+      - name: Install Qt (with bundled MinGW)
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           arch: 'win64_mingw'
           modules: 'qtcharts qtwebengine'
-          aqtversion: '==3.3.5'                     # 关键修复
+          aqtversion: '==3.3.5'
+          # 重点：让 action 同时下载并配置 Qt 官方 MinGW 9.0.0 工具链
           tools: 'tools_mingw,90,qt.tools.win64_mingw900'
+          setup-mingw: 'true'   # 可选，显式要求设置 MinGW 环境
 
       - name: Configure & Build
+        shell: pwsh
         run: |
-          $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
+          # 确认 MinGW 路径（由 install-qt-action 自动添加到 PATH 或通过 IQTA_TOOLS 变量提供）
+          # 通常 MinGW 的 gcc.exe 位于 $env:IQTA_TOOLS\mingw90_64\bin
+          $mingwPath = "$env:IQTA_TOOLS\mingw90_64\bin"
+          if (-not (Test-Path $mingwPath)) {
+              # 备用路径
+              $mingwPath = "$env:Qt6_DIR\..\Tools\mingw900_64\bin"
+          }
+          Write-Host "Adding MinGW to PATH: $mingwPath"
+          $env:PATH = "$mingwPath;$env:Qt6_DIR\bin;$env:PATH"
+          
+          # 构建
           cmake -S . -B build `
             -G "MinGW Makefiles" `
             -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=gcc `
-            -DCMAKE_CXX_COMPILER=g++
+            -DCMAKE_C_COMPILER="$mingwPath\gcc.exe" `
+            -DCMAKE_CXX_COMPILER="$mingwPath\g++.exe"
+          
           cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
-
-      - name: Build
-        shell: pwsh
-        run: |
-          # 将 Qt 和 MinGW 加入 PATH
-          $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
-          
-          cmake -S . -B build `
-            -G "MinGW Makefiles" `
-            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
-            -DCMAKE_BUILD_TYPE=Release
-          
-          cmake --build build --parallel
-
-      - name: Deploy Qt Dependencies (windeployqt)
-        run: |
-          # 假设你的可执行文件名为 my_app.exe，位于 build/Release/
-          $exePath = "build\Release\my_app.exe"
-          
-          # 使用 windeployqt 自动复制所需 dll
-          windeployqt --release --no-translations --no-compiler-runtime "$exePath"
-          
-          # 可选：手动复制 MinGW 运行时库（如果 windeployqt 没带上）
-          Copy-Item "C:\msys64\mingw64\bin\libgcc_s_seh-1.dll" -Destination "build\Release\"
-          Copy-Item "C:\msys64\mingw64\bin\libstdc++-6.dll" -Destination "build\Release\"
-          Copy-Item "C:\msys64\mingw64\bin\libwinpthread-1.dll" -Destination "build\Release\"
