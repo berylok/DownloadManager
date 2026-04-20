@@ -1,6 +1,7 @@
-name: Qt Windows MinGW Example
+name: Qt_Test_Build_Windows
 
-on: [push, workflow_dispatch]
+on:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -8,14 +9,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           arch: 'win64_mingw'
           modules: 'qtcharts qtwebengine'
-          # 官方推荐显式指定工具链和架构，避免自动检测失败
+          aqtversion: '==3.3.5'                     # 关键修复
           tools: 'tools_mingw,90,qt.tools.win64_mingw900'
+
+      - name: Configure & Build
+        run: |
+          $env:PATH = "$env:Qt6_DIR\bin;$env:PATH"
+          cmake -S . -B build `
+            -G "MinGW Makefiles" `
+            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=gcc `
+            -DCMAKE_CXX_COMPILER=g++
+          cmake --build build --config Release --parallel $env:NUMBER_OF_PROCESSORS
 
       - name: Build
         shell: pwsh
