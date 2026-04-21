@@ -3,8 +3,8 @@ name: Qt Test Build
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
+#permissions:
+ # contents: read
 
 jobs:
   # ==================== Ubuntu 构建 ====================
