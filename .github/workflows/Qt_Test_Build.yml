@@ -2,9 +2,9 @@ name: Qt Test Build
 
 on:
   workflow_dispatch:
-
-#permissions:
- # contents: read
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   # ==================== Ubuntu 构建 ====================
