@@ -52,6 +52,8 @@ signals:
     void finished();
     void errorOccurred(const QString &error);
     void canceled();
+    void mergeStarted();   // 新增：合并开始信号
+    void mergeProgress(int percent);   // 新增：合并进度（0-100）
 
 private slots:
     void onSegmentProgress(int id, qint64 delta);

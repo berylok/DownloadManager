@@ -8,6 +8,9 @@
 
 int main(int argc, char *argv[])
 {
+    // // 强制使用XCB（X11）平台插件，通过XWayland运行
+    // qputenv("QT_QPA_PLATFORM", "xcb");
+
     qRegisterMetaType<QPair<qint64, qint64>>();
 
     QApplication a(argc, argv);
@@ -16,8 +19,9 @@ int main(int argc, char *argv[])
     a.setOrganizationName("DownloadManager");
     // a.setApplicationDisplayName("多线程下载器1.63b2");
 
-    int randomNum = QRandomGenerator::global()->generate(); // 生成一个随机整数
-    QString newName = QString("多线程下载器1.63 -%1-").arg(randomNum);
+    int randomNum = QRandomGenerator::global()->generate();
+    QString hexStr = QString::number(static_cast<unsigned int>(randomNum), 16).toUpper();  // 16 表示十六进制，toUpper() 转为大写
+    QString newName = QString("(%1)").arg(hexStr);
     a.setApplicationDisplayName(newName);
 
     a.setApplicationVersion("1.6.3");

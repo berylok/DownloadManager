@@ -40,6 +40,46 @@ DownloadItem::DownloadItem(const QUrl &url, const QString &savePath, QWidget *pa
             this, &DownloadItem::onWorkerError, Qt::QueuedConnection);
     connect(m_worker, &DownloadWorker::canceled,
             this, &DownloadItem::onWorkerCanceled, Qt::QueuedConnection);
+
+    connect(m_worker, &DownloadWorker::mergeStarted,
+            this, [this]() {
+                m_statusLabel->setText("文件合并中...");
+            }, Qt::QueuedConnection);
+
+    // 合并开始
+    connect(m_worker, &DownloadWorker::mergeStarted, this, [this]() {
+        m_statusLabel->setText("合并中...");
+        m_progressBar->setValue(0);
+        m_progressBar->setFormat("合并中... 0%");
+        // 设置合并时的样式表
+        m_progressBar->setStyleSheet(
+            "QProgressBar {"
+            "   background-color: #C8E6C9;"    /* 背景：浅绿色（未完成部分） */
+            "   border: 1px solid #81C784;"
+            "   border-radius: 4px;"
+            "   text-align: center;"
+            "}"
+            "QProgressBar::chunk {"
+            "   background-color: #A5D6A7;"    /* 进度条前景：淡绿 */
+            "}"
+            );
+    }, Qt::QueuedConnection);
+
+    // 合并进度更新（保持样式不变）
+    connect(m_worker, &DownloadWorker::mergeProgress, this, [this](int percent) {
+        m_progressBar->setValue(percent);
+        m_progressBar->setFormat(QString("合并中... %1%").arg(percent));
+        m_speedLabel->setText("速度: -");
+        m_timeLabel->setText("剩余时间: -");
+    }, Qt::QueuedConnection);
+
+    // 下载完成时恢复默认样式（可选）
+    connect(m_worker, &DownloadWorker::finished, this, [this]() {
+        // 清除样式表，恢复系统默认或下载完成时的样式
+        m_progressBar->setStyleSheet("");
+        // ... 其他已完成状态的更新
+    }, Qt::QueuedConnection);
+
 }
 
 DownloadItem::~DownloadItem()

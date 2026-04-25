@@ -24,7 +24,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
 
     QLabel *threadLabel = new QLabel(tr("每个下载的默认线程数:"));
     m_threadCountSpin = new QSpinBox;
-    m_threadCountSpin->setRange(1, 20);
+    m_threadCountSpin->setRange(1, 100);
     m_threadCountSpin->setValue(Preferences::getDefaultThreadCount());
 
 

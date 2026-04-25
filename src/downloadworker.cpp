@@ -419,8 +419,9 @@ void DownloadWorker::cancelDownload()
 void DownloadWorker::mergeFiles()
 {
     qDebug() << "Merging files for" << m_fileName;
-    QString finalPath = QString("%1/%2").arg(m_savePath, m_fileName);
+    emit mergeStarted();   // 通知 UI 开始合并
 
+    QString finalPath = QString("%1/%2").arg(m_savePath, m_fileName);
     if (QFile::exists(finalPath))
         QFile::remove(finalPath);
 
@@ -447,12 +448,22 @@ void DownloadWorker::mergeFiles()
     QByteArray buffer;
     buffer.reserve(bufSize);
 
+    // 合并相关
+    int totalFiles = files.size();
+    int processed = 0;
+
     for (const QFileInfo &fi : files) {
         if (m_canceled.load()) {
             outFile.close();
             QFile::remove(finalPath);
             return;
         }
+
+
+        // **发射合并进度**
+        int percent = (totalFiles > 0) ? (processed * 100 / totalFiles) : 100;
+        emit mergeProgress(percent);
+
 
         // 验证文件名中的预期大小与实际文件大小是否一致
         qint64 start = fi.baseName().section('_', 1, 1).toLongLong();
@@ -487,7 +498,12 @@ void DownloadWorker::mergeFiles()
             remaining -= chunk;
         }
         inFile.close();
+
+        processed++;//合并进度++
     }
+
+    // 最后确保100%
+    emit mergeProgress(100);
 
     outFile.close();    //确保输出文件关闭
     cleanupTemp();
