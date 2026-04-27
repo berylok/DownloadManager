@@ -1,4 +1,4 @@
-name: Qt Test Build
+name: Qt Test Build Ubuntu
 
 on:
   workflow_dispatch:
