@@ -73,12 +73,12 @@ DownloadItem::DownloadItem(const QUrl &url, const QString &savePath, QWidget *pa
         m_timeLabel->setText("剩余时间: -");
     }, Qt::QueuedConnection);
 
-    // 下载完成时恢复默认样式（可选）
-    connect(m_worker, &DownloadWorker::finished, this, [this]() {
-        // 清除样式表，恢复系统默认或下载完成时的样式
-        m_progressBar->setStyleSheet("");
-        // ... 其他已完成状态的更新
-    }, Qt::QueuedConnection);
+    // // 下载完成时恢复默认样式（可选）
+    // connect(m_worker, &DownloadWorker::finished, this, [this]() {
+    //     // 清除样式表，恢复系统默认或下载完成时的样式
+    //     m_progressBar->setStyleSheet("");
+    //     // ... 其他已完成状态的更新
+    // }, Qt::QueuedConnection);
 
 }
 
