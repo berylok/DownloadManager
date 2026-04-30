@@ -49,6 +49,7 @@ DownloadWorker::DownloadWorker(QObject *parent)
 DownloadWorker::~DownloadWorker()
 {
     qDebug() << "DownloadWorker destructor for" << m_fileName;
+    cleanupTemp(); //清理缓存
     if (m_downloading && !m_finished) {
         cancelDownload();
     }
@@ -180,11 +181,31 @@ bool DownloadWorker::fetchFileSize()
     request.setAttribute(QNetworkRequest::HttpPipeliningAllowedAttribute, true);
     request.setRawHeader("User-Agent", "Mozilla/5.0 (Qt Download Manager)");
 
-    // HEAD 请求
+    // -------------------- 第一部分：标准 HEAD 请求 --------------------
     QNetworkReply *reply = manager.head(request);
     QEventLoop loop;
+
+    // ---- 超时定时器 ----
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);                 // 只触发一次
+    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit); // 超时退出事件循环
+    timeoutTimer.start(10000);                        // 10秒超时
+
+    // 正常完成也退出事件循环
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
+    loop.exec();   // 阻塞等待，直到 reply 完成 或 10秒超时
+
+    // ---- 处理超时情况 ----
+    if (!reply->isFinished()) {
+        // 到这儿说明是超时触发的 quit，reply 还没完成
+        timeoutTimer.stop();           // 停止定时器（可选，setSingleShot 已自动停止）
+        reply->abort();                // 断开网络请求，释放资源
+        reply->deleteLater();
+        return false;                  // 获取大小失败
+    }
+
+    // ---- 正常完成 ----
+    timeoutTimer.stop();               // 正常完成则提前停掉定时器，避免重复
 
     if (reply->error() == QNetworkReply::NoError) {
         QString acceptRanges = reply->rawHeader("Accept-Ranges");
@@ -197,13 +218,29 @@ bool DownloadWorker::fetchFileSize()
         return m_fileSize > 0;
     }
 
-    // 尝试 Range: bytes=0-0 的 GET 请求
+    // -------------------- 第二部分：HEAD 失败，尝试 Range: bytes=0-0 GET --------------------
+    // 同样需要超时保护
+    reply->deleteLater();
     qDebug() << "HEAD request failed, trying GET with Range: bytes=0-0";
     request.setRawHeader("Range", "bytes=0-0");
     QNetworkReply *getReply = manager.get(request);
     QEventLoop loop2;
+
+    QTimer timeoutTimer2;
+    timeoutTimer2.setSingleShot(true);
+    connect(&timeoutTimer2, &QTimer::timeout, &loop2, &QEventLoop::quit);
+    timeoutTimer2.start(10000);
+
     connect(getReply, &QNetworkReply::finished, &loop2, &QEventLoop::quit);
     loop2.exec();
+
+    if (!getReply->isFinished()) {
+        timeoutTimer2.stop();
+        getReply->abort();
+        getReply->deleteLater();
+        return false;
+    }
+    timeoutTimer2.stop();
 
     if (getReply->error() == QNetworkReply::NoError) {
         QString range = getReply->rawHeader("Content-Range");

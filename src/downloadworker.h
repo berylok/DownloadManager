@@ -110,6 +110,18 @@ private:
     QQueue<QPair<qint64, qint64>> m_tasks;      // 待下载块队列
     int m_totalBlocks = 0;                       // 总块数
     QAtomicInt m_completedBlocks;                 // 已完成块数
+
+public:
+    // 返回 true 表示存在可续传的缓存
+    bool hasResumableCache(const QUrl &url, const QString &savePath);
+
+private:
+    // 从临时目录中恢复已完成的块
+    bool resumeFromCache();
+    // 记录是否正在续传
+    bool m_isResuming = false;
+    // 已完成的块数（续传时使用）
+    QAtomicInt m_resumedBlocks;
 };
 
 #endif // DOWNLOADWORKER_H
