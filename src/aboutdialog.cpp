@@ -14,7 +14,7 @@ AboutDialog::AboutDialog(QWidget *parent)
 
 void AboutDialog::setupUI()
 {
-    setWindowTitle(tr("关于 多线程下载器"));
+    setWindowTitle(tr(""));
     setFixedSize(550, 600);
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
@@ -84,7 +84,7 @@ QWidget* AboutDialog::createAboutPage()
     QLabel *versionLabel = new QLabel(
         tr("<div style='text-align:center;'>"
            "<b>版本：</b>%1<br>"
-           "<b>发布日期：</b>2025年3月"
+           "<b>发布日期：</b>2026年3月"
            "</div>").arg(QApplication::applicationVersion()), page);
     versionLabel->setAlignment(Qt::AlignCenter);
     versionLabel->setStyleSheet("color: #666; font-size: 12px; margin-bottom: 10px;");

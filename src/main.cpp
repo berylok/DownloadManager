@@ -21,10 +21,10 @@ int main(int argc, char *argv[])
 
     int randomNum = QRandomGenerator::global()->generate();
     QString hexStr = QString::number(static_cast<unsigned int>(randomNum), 16).toUpper();  // 16 表示十六进制，toUpper() 转为大写
-    QString newName = QString("(%1)").arg(hexStr);
+    QString newName = QString("多线程下载器1.66b-%1").arg(hexStr);
     a.setApplicationDisplayName(newName);
 
-    a.setApplicationVersion("1.6.3");
+    a.setApplicationVersion("1.6.6");
 
 #ifdef Q_OS_LINUX
     a.setDesktopFileName("download-manager");
