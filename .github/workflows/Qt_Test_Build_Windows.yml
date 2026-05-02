@@ -8,7 +8,8 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-2019  # 或 windows-latest，或 windows-2022，看你需要什么VS版本
+    runs-on: [windows-latest, windows-2019, windows-2022]
+    # windows-2019  # 或 windows-latest，或 windows-2022，看你需要什么VS版本
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
