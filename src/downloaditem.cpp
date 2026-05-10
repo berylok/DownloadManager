@@ -121,6 +121,7 @@ void DownloadItem::setupUI()
     m_sizeLabel = new QLabel("  |大小: 计算中...", this);
     m_timeLabel = new QLabel("  |剩余时间: 未知", this);
     m_cancelBtn = new QPushButton("取消", this);
+    m_cancelBtn->setStyleSheet("background-color: red;");
     connect(m_cancelBtn, &QPushButton::clicked, this, &DownloadItem::cancel);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);

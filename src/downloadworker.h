@@ -122,6 +122,17 @@ private:
     bool m_isResuming = false;
     // 已完成的块数（续传时使用）
     QAtomicInt m_resumedBlocks;
+
+
+    //整体自动暂停策略
+public slots:
+    void pauseDownload();   // 暂停所有分段
+    void resumeDownload();  // 恢复（继续分发未完成的块）
+
+private:
+    bool m_paused = false;
+    QTimer *m_autoResumeTimer = nullptr; // 自动恢复定时器
+
 };
 
 #endif // DOWNLOADWORKER_H

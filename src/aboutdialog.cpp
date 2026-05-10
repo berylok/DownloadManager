@@ -90,6 +90,15 @@ QWidget* AboutDialog::createAboutPage()
     versionLabel->setStyleSheet("color: #666; font-size: 12px; margin-bottom: 10px;");
     layout->addWidget(versionLabel);
 
+    // 源码链接
+    QLabel *linkLabel = new QLabel(
+        tr("<p style='text-align:center; margin-top:10px;'>"
+           "<a href='https://github.com/berylok/DownloadManager' style='color:#0066cc;'>"
+           "源码链接：https://github.com/berylok/DownloadManager</a></p>"), page);
+    linkLabel->setOpenExternalLinks(true);
+    linkLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(linkLabel);
+
     // 分隔线
     QFrame *line = new QFrame(page);
     line->setFrameShape(QFrame::HLine);

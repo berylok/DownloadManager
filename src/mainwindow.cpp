@@ -115,6 +115,7 @@ void MainWindow::setupUI()
     m_urlEdit = new QLineEdit(this);
     m_urlEdit->setPlaceholderText("输入下载URL或拖拽文件到此");
     m_addButton = new QPushButton("添加下载", this);
+    m_addButton->setStyleSheet("background-color: lightgreen;");
 
     addLayout->addWidget(m_urlEdit);
     addLayout->addWidget(m_addButton);

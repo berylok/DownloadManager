@@ -307,14 +307,37 @@ void DownloadWorker::onSegmentError(int id, const QString &error)
     if (retries < m_maxRetries) {
         m_retryCounts[id] = retries + 1;
         locker.unlock();
+
         if (id >= 0 && id < m_segments.size()) {
             DownloadSegment *seg = m_segments[id].data();
             if (seg) {
-                QMetaObject::invokeMethod(seg, "resumeDownload", Qt::QueuedConnection);
+                // 计算延迟：基础 1 秒，每次重试翻倍，最大 30 秒
+                int delayMs = qMin(1000 * (1 << (retries - 1)), 30000);
+                qDebug() << "Segment" << id << "will retry after" << delayMs << "ms";
+                QTimer::singleShot(delayMs, seg, [seg]() {
+                    QMetaObject::invokeMethod(seg, "resumeDownload", Qt::QueuedConnection);
+                });
             }
         }
         return;
     }
+
+
+    // 如果重试次数超过 2 次，且尚未暂停，则触发整体暂停
+    if (retries >= 2 && !m_paused) {
+        locker.unlock();
+        pauseDownload();
+
+        // 30 秒后自动恢复
+        if (!m_autoResumeTimer) {
+            m_autoResumeTimer = new QTimer(this);
+            m_autoResumeTimer->setSingleShot(true);
+            connect(m_autoResumeTimer, &QTimer::timeout, this, &DownloadWorker::resumeDownload);
+        }
+        m_autoResumeTimer->start(30000); // 30 秒
+        return;
+    }
+
 
     // 重试耗尽：将当前块放回队列，并唤醒/创建线程
     qWarning() << "Segment" << id << "failed after max retries, re-enqueuing block";
@@ -589,4 +612,39 @@ QString DownloadWorker::timeRemaining() const
 qint64 DownloadWorker::totalTimeMs() const
 {
     return m_totalTimeMs;
+}
+
+void DownloadWorker::pauseDownload()
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_paused || m_canceled.load()) return;
+    m_paused = true;
+    m_speedUpdateTimer->stop();
+
+    // 通知所有分段暂停
+    for (auto &ptr : m_segments) {
+        DownloadSegment *seg = ptr.data();
+        if (seg) {
+            QMetaObject::invokeMethod(seg, "cancelDownload", Qt::QueuedConnection); // 或专门的 pause 方法
+        }
+    }
+    // 注意：这里只是取消当前请求，线程保持运行，它们会因队列空而进入空闲
+    // 如果你有专门的暂停方法（不清理文件），改用那个
+}
+
+void DownloadWorker::resumeDownload()
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_paused || m_canceled.load()) return;
+    m_paused = false;
+    m_speedUpdateTimer->start();
+
+    // 唤醒所有空闲分段，让它们重新取块
+    for (auto &ptr : m_segments) {
+        DownloadSegment *seg = ptr.data();
+        if (seg) {
+            QMetaObject::invokeMethod(seg, "fetchNextBlock", Qt::QueuedConnection);
+        }
+    }
+    // 检查是否有线程已停止，必要时启动新线程处理剩余块（同 onSegmentError 逻辑）
 }

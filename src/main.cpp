@@ -6,14 +6,24 @@
 #include <QRandomGenerator>
 #include <QString>
 
+#include <QPalette>
+
 int main(int argc, char *argv[])
 {
-    // // 强制使用XCB（X11）平台插件，通过XWayland运行
-    // qputenv("QT_QPA_PLATFORM", "xcb");
-
     qRegisterMetaType<QPair<qint64, qint64>>();
 
     QApplication a(argc, argv);
+
+
+    // 获取应用程序的调色板
+    QPalette palette = a.palette();
+    // 设置焦点高亮颜色为蓝色
+    palette.setColor(QPalette::Active, QPalette::Highlight, QColor(0, 120, 215));     // 选中项背景色
+    palette.setColor(QPalette::Active, QPalette::HighlightedText, Qt::white);         // 选中项文字色
+    palette.setColor(QPalette::Inactive, QPalette::Highlight, QColor(0, 120, 215));
+    palette.setColor(QPalette::Inactive, QPalette::HighlightedText, Qt::white);
+    a.setPalette(palette);
+
 
     a.setApplicationName("DownloadManager");
     a.setOrganizationName("DownloadManager");
