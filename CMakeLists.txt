@@ -14,7 +14,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-qt_add_executable(DownloadManager
+qt_add_executable(DownloadManager WIN32 MACOSX_BUNDLE
     src/main.cpp
     src/mainwindow.cpp
 
