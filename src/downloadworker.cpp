@@ -83,12 +83,15 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
     m_lastSpeedBytes = 0;
 
     // 设置块大小（默认 256KB）
-    qint64 actualBlockSize = (blockSize > 0) ? blockSize : 256 * 1024;
+    qint64 actualBlockSize = (blockSize > 0) ? blockSize : 2 * 1024 * 1024;
 
     // 从 URL 提取文件名
     QString path = url.path();
     m_fileName = DownloadUtils::sanitizeFileName(QFileInfo(path).fileName());
     if (m_fileName.isEmpty()) m_fileName = "download_file";
+
+    // 新增：生成唯一任务 ID，可以用 url + 保存路径（确保唯一）
+    m_taskId = url.toString() + "@" + savePath;   // 简单但有效
 
     // 确保保存目录存在
     QDir saveDir(savePath);
@@ -120,6 +123,7 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         emit errorOccurred("无法获取文件大小，请检查网络或URL");
         return;
     }
+    emit statusChanged(m_taskId, "文件信息获取成功，准备下载");
 
     locker.relock();
 
@@ -131,6 +135,10 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         emit errorOccurred(QString("无法创建临时目录：%1").arg(m_tempDir));
         return;
     }
+    // 创建临时目录后
+    emit statusChanged(m_taskId,
+                       QString("下载已开始，共 %1 线程，块大小 %2")
+                           .arg(m_threadCount).arg(actualBlockSize));
 
     // 生成任务队列（每个块为 [start, end]）
     m_tasks.clear();

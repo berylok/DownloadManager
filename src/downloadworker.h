@@ -133,6 +133,15 @@ private:
     bool m_paused = false;
     QTimer *m_autoResumeTimer = nullptr; // 自动恢复定时器
 
+
+    // 新增：任务状态消息，带任务ID
+signals:
+    void statusChanged(const QString&, const QString&);
+
+private:
+    // 在原有的私有成员中添加
+    QString m_taskId;   // 任务唯一标识
+
 };
 
 #endif // DOWNLOADWORKER_H

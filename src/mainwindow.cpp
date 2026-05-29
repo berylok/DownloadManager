@@ -69,7 +69,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_downloadManager->setMaxConcurrentDownloads(Preferences::getMaxConcurrentDownloads());
 
     //setWindowTitle("多线程下载器");
-    resize(700, 600);
+    resize(700, 400);
 
 }
 
