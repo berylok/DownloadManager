@@ -14,8 +14,11 @@
 #include <QMutexLocker>
 #include <QDebug>
 #include <QPointer>
+#include <QHash>
+#include <QElapsedTimer>
 
-// 防止 Preferences 缺失导致编译错误
+#include <utility>   // for std::as_const
+
 #ifdef HAVE_PREFERENCES
 #include "preferences.h"
 #define MAX_RETRIES Preferences::getMaxRetries()
@@ -23,49 +26,53 @@
 #define MAX_RETRIES 3
 #endif
 
-
 DownloadWorker::DownloadWorker(QObject *parent)
     : QObject(parent)
     , m_canceled(false)
     , m_downloading(false)
-    , m_finished(false)
     , m_fileSize(0)
+    , m_finished(false)
     , m_downloadedSize(0)
     , m_speed(0)
-    , m_finishedSegments(0)
     , m_threadCount(1)
+    , m_finishedSegments(0)
     , m_maxRetries(MAX_RETRIES)
     , m_speedUpdateTimer(new QTimer(this))
     , m_totalBlocks(0)
 {
     m_elapsedTimer.invalidate();
 
+    // 创建共享的 QNetworkAccessManager 并限制并发连接数
+    m_sharedManager = new QNetworkAccessManager(this);
+
+
     connect(m_speedUpdateTimer, &QTimer::timeout, this, &DownloadWorker::updateSpeed);
-    m_speedUpdateTimer->setInterval(1000);  // 每秒更新一次速度
+    m_speedUpdateTimer->setInterval(1000);
     m_speedUpdateTimer->setSingleShot(false);
 }
-
 
 DownloadWorker::~DownloadWorker()
 {
     qDebug() << "DownloadWorker destructor for" << m_fileName;
-    cleanupTemp(); //清理缓存
+    cleanupTemp();
     if (m_downloading && !m_finished) {
         cancelDownload();
     }
 }
 
-
 void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
                                    int threadCount, qint64 blockSize)
 {
+    m_useSingleThreadFallback = false;
+    m_consecutive403Errors = 0;
+
     QMutexLocker locker(&m_mutex);
     if (m_downloading || m_finished) {
         qWarning() << "Download already in progress or finished";
         return;
     }
 
-    // 重置状态
+    // ===== ① 重置状态 =====
     m_url = url;
     m_savePath = savePath;
     m_threadCount = qMax(1, threadCount);
@@ -82,18 +89,17 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
     m_elapsedTimer.start();
     m_lastSpeedBytes = 0;
 
-    // 设置块大小（默认 256KB）
-    qint64 actualBlockSize = (blockSize > 0) ? blockSize : 2 * 1024 * 1024;
+    // ===== ② 只初始化范围，不算块大小 =====
+    m_minBlockSize = 64 * 1024;
+    m_maxBlockSize = 8 * 1024 * 1024;
+    m_currentBlockSize = m_minBlockSize;   // 临时值
 
-    // 从 URL 提取文件名
+    // ===== ③ 文件名 =====
     QString path = url.path();
     m_fileName = DownloadUtils::sanitizeFileName(QFileInfo(path).fileName());
     if (m_fileName.isEmpty()) m_fileName = "download_file";
 
-    // 新增：生成唯一任务 ID，可以用 url + 保存路径（确保唯一）
-    m_taskId = url.toString() + "@" + savePath;   // 简单但有效
-
-    // 确保保存目录存在
+    // ===== ④ 保存目录 =====
     QDir saveDir(savePath);
     if (!saveDir.exists() && !saveDir.mkpath(".")) {
         locker.unlock();
@@ -101,16 +107,14 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         return;
     }
 
-    // 获取文件大小（带重试）
     locker.unlock();
 
+    // ===== ⑤ 获取文件大小（重试）——fetchFileSize 只在这里调 =====
     int maxRetries = 3;
     int retryCount = 0;
     bool sizeFetched = false;
-
     while (!sizeFetched && retryCount < maxRetries) {
         if (retryCount > 0) {
-            // 重试前等待，采用指数退避：1s, 2s, 4s
             int delay = 1000 * (1 << (retryCount - 1));
             QThread::msleep(delay);
             qDebug() << "Retrying fetchFileSize, attempt" << retryCount + 1;
@@ -123,11 +127,18 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         emit errorOccurred("无法获取文件大小，请检查网络或URL");
         return;
     }
-    emit statusChanged(m_taskId, "文件信息获取成功，准备下载");
 
     locker.relock();
 
-    // 创建临时目录（用于存放所有块的临时文件）
+    // ===== ⑥ ★块大小计算放这里★ =====
+    if (blockSize > 0) {
+        m_currentBlockSize = qBound(m_minBlockSize, blockSize, m_maxBlockSize);
+    } else {
+        qint64 target = m_fileSize / qMax(1, m_threadCount * 15);
+        m_currentBlockSize = qBound(m_minBlockSize, target, m_maxBlockSize);
+    }
+
+    // ===== ⑦ 临时目录 =====
     m_tempDir = QString("%1/%2_blocks").arg(QDir::tempPath(), m_fileName);
     QDir td(m_tempDir);
     if (!td.exists() && !td.mkpath(".")) {
@@ -135,31 +146,24 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         emit errorOccurred(QString("无法创建临时目录：%1").arg(m_tempDir));
         return;
     }
-    // 创建临时目录后
-    emit statusChanged(m_taskId,
-                       QString("下载已开始，共 %1 线程，块大小 %2")
-                           .arg(m_threadCount).arg(actualBlockSize));
 
-    // 生成任务队列（每个块为 [start, end]）
-    m_tasks.clear();
-    for (qint64 pos = 0; pos < m_fileSize; pos += actualBlockSize) {
-        qint64 end = qMin(pos + actualBlockSize - 1, m_fileSize - 1);
-        m_tasks.enqueue(qMakePair(pos, end));
+    // ===== ⑧ 初始化块生成器 =====
+    m_nextStartPos = 0;
+    {
+        QMutexLocker failedLocker(&m_failedMutex);
+        m_failedBlocks.clear();
     }
-    m_totalBlocks = m_tasks.size();
-    m_completedBlocks = 0;  // 直接赋值，QAtomicInt 支持隐式转换
-    qDebug() << "Total blocks:" << m_totalBlocks << "block size:" << actualBlockSize;
+    m_totalBlocks = (m_fileSize + m_currentBlockSize - 1) / m_currentBlockSize;
+    qDebug() << "Estimated total blocks:" << m_totalBlocks
+             << "block size:" << m_currentBlockSize;
 
-    // 重置分段进度数组（用于整体速度计算）
     m_segmentProgress.clear();
     m_segmentProgress.resize(m_threadCount, 0);
 
-    // 启动速度更新定时器
     m_speedUpdateTimer->start();
 
     // 创建指定数量的 DownloadSegment
     for (int i = 0; i < m_threadCount; ++i) {
-        // 注意：DownloadSegment 构造函数已修改为接受 worker 指针和 tempDir
         DownloadSegment *seg = new DownloadSegment(i, m_url, m_tempDir, this);
         m_segments.append(QPointer<DownloadSegment>(seg));
         QThread *thread = new QThread();
@@ -168,11 +172,20 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
         // 跨线程信号连接
         connect(thread, &QThread::started, seg, &DownloadSegment::fetchNextBlock, Qt::QueuedConnection);
         connect(seg, &DownloadSegment::progress, this, &DownloadWorker::onSegmentProgress, Qt::QueuedConnection);
-        connect(seg, &DownloadSegment::blockFinished, this, &DownloadWorker::onBlockFinished, Qt::QueuedConnection);
-        connect(seg, &DownloadSegment::error, this, &DownloadWorker::onSegmentError, Qt::QueuedConnection);
-        connect(seg, &DownloadSegment::finished, this, &DownloadWorker::onSegmentFinished, Qt::QueuedConnection); // 分段无更多块时发出
 
-        // 线程结束后自动清理对象
+        connect(seg, &DownloadSegment::error, this, &DownloadWorker::onSegmentError, Qt::QueuedConnection);
+        connect(seg, &DownloadSegment::finished, this, &DownloadWorker::onSegmentFinished, Qt::QueuedConnection);
+        connect(seg, &DownloadSegment::canceled, this, &DownloadWorker::onSegmentCanceled, Qt::QueuedConnection);
+        connect(seg, &DownloadSegment::progressSubtract, this, &DownloadWorker::onSegmentProgressSubtract, Qt::QueuedConnection);
+
+        // 请求下载块
+        connect(seg, &DownloadSegment::requestDownloadBlock,
+                this, &DownloadWorker::onSegmentRequestDownload, Qt::QueuedConnection);
+
+        // 回传数据和完成状态
+        connect(this, &DownloadWorker::dataToSegment, seg, &DownloadSegment::onDataReceived, Qt::QueuedConnection);
+        connect(this, &DownloadWorker::finishToSegment, seg, &DownloadSegment::onBlockDownloadFinished, Qt::QueuedConnection);
+
         connect(thread, &QThread::finished, seg, &QObject::deleteLater);
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
@@ -181,41 +194,33 @@ void DownloadWorker::startDownload(const QUrl &url, const QString &savePath,
     }
 }
 
-
 bool DownloadWorker::fetchFileSize()
 {
     QNetworkAccessManager manager;
     QNetworkRequest request(m_url);
-    request.setAttribute(QNetworkRequest::HttpPipeliningAllowedAttribute, true);
+    //request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
     request.setRawHeader("User-Agent", "Mozilla/5.0 (Qt Download Manager)");
 
-    // -------------------- 第一部分：标准 HEAD 请求 --------------------
     QNetworkReply *reply = manager.head(request);
     QEventLoop loop;
-
-    // ---- 超时定时器 ----
     QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);                 // 只触发一次
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit); // 超时退出事件循环
-    timeoutTimer.start(10000);                        // 10秒超时
-
-    // 正常完成也退出事件循环
+    timeoutTimer.setSingleShot(true);
+    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeoutTimer.start(10000);
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();   // 阻塞等待，直到 reply 完成 或 10秒超时
+    loop.exec();
 
-    // ---- 处理超时情况 ----
     if (!reply->isFinished()) {
-        // 到这儿说明是超时触发的 quit，reply 还没完成
-        timeoutTimer.stop();           // 停止定时器（可选，setSingleShot 已自动停止）
-        reply->abort();                // 断开网络请求，释放资源
+        timeoutTimer.stop();
+        reply->abort();
+        qWarning() << "HEAD request timeout after 10 seconds";
         reply->deleteLater();
-        return false;                  // 获取大小失败
+        return false;
     }
-
-    // ---- 正常完成 ----
-    timeoutTimer.stop();               // 正常完成则提前停掉定时器，避免重复
+    timeoutTimer.stop();
 
     if (reply->error() == QNetworkReply::NoError) {
+        // 成功处理...
         QString acceptRanges = reply->rawHeader("Accept-Ranges");
         if (acceptRanges != "bytes") {
             qDebug() << "Server does not support range requests, fallback to single thread";
@@ -224,27 +229,26 @@ bool DownloadWorker::fetchFileSize()
         m_fileSize = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
         reply->deleteLater();
         return m_fileSize > 0;
+    } else {
+        qWarning() << "HEAD request error:" << reply->error() << reply->errorString();
+        reply->deleteLater();
     }
 
-    // -------------------- 第二部分：HEAD 失败，尝试 Range: bytes=0-0 GET --------------------
-    // 同样需要超时保护
-    reply->deleteLater();
+    // 降级尝试 GET Range:0-0
     qDebug() << "HEAD request failed, trying GET with Range: bytes=0-0";
     request.setRawHeader("Range", "bytes=0-0");
     QNetworkReply *getReply = manager.get(request);
-    QEventLoop loop2;
-
     QTimer timeoutTimer2;
     timeoutTimer2.setSingleShot(true);
-    connect(&timeoutTimer2, &QTimer::timeout, &loop2, &QEventLoop::quit);
+    connect(&timeoutTimer2, &QTimer::timeout, &loop, &QEventLoop::quit);
     timeoutTimer2.start(10000);
-
-    connect(getReply, &QNetworkReply::finished, &loop2, &QEventLoop::quit);
-    loop2.exec();
+    connect(getReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
 
     if (!getReply->isFinished()) {
         timeoutTimer2.stop();
         getReply->abort();
+        qWarning() << "GET request timeout after 10 seconds";
         getReply->deleteLater();
         return false;
     }
@@ -261,35 +265,40 @@ bool DownloadWorker::fetchFileSize()
         }
         getReply->deleteLater();
         return m_fileSize > 0;
+    } else {
+        qWarning() << "GET request error:" << getReply->error() << getReply->errorString();
+        getReply->deleteLater();
+        return false;
     }
-
-    getReply->deleteLater();
-    return false;
 }
-
 
 void DownloadWorker::onSegmentProgress(int id, qint64 bytesReceived)
 {
     QMutexLocker locker(&m_mutex);
     if (id < 0 || id >= m_segmentProgress.size()) return;
-
     m_segmentProgress[id] += bytesReceived;
     m_downloadedSize += bytesReceived;
     locker.unlock();
-
-    // 发射进度信号（速度由定时器更新）
     emit progressUpdated(m_downloadedSize, m_fileSize, m_speed);
 }
-
 
 void DownloadWorker::onSegmentFinished(int id)
 {
     qDebug() << "Segment thread" << id << "finished (no more blocks)";
-    QMutexLocker locker(&m_mutex);
-    m_finishedSegments++;
-    // 不在此处触发合并，合并由 onBlockFinished 完成
-}
 
+    int count = 0;
+    int total = 0;
+    {
+        QMutexLocker locker(&m_mutex);
+        count = ++m_finishedSegments;
+        total = m_segments.size();
+    }
+
+    if (total > 0 && count >= total) {
+        qDebug() << "All segments finished, merging...";
+        mergeFiles();      // 锁外调，避免 emit 期间持锁
+    }
+}
 
 void DownloadWorker::onSegmentCanceled(int id)
 {
@@ -297,171 +306,96 @@ void DownloadWorker::onSegmentCanceled(int id)
     QMutexLocker locker(&m_mutex);
     if (id >= 0 && id < m_threads.size()) {
         QThread *thread = m_threads[id].data();
-        if (thread && thread->isRunning()) {
+        if (thread && thread->isRunning())
             thread->quit();
-        }
     }
 }
-
 
 void DownloadWorker::onSegmentError(int id, const QString &error)
 {
     qDebug() << "Segment" << id << "error:" << error;
-
+    // 错误已由 Segment 内部处理（重试或放回队列），Worker 只需记录
+    // 保留原有重试逻辑的简化版：仅当重试次数耗尽时可能需要额外动作
     QMutexLocker locker(&m_mutex);
     if (m_canceled.load()) return;
 
     int retries = m_retryCounts.value(id, 0);
     if (retries < m_maxRetries) {
         m_retryCounts[id] = retries + 1;
-        locker.unlock();
-
-        if (id >= 0 && id < m_segments.size()) {
-            DownloadSegment *seg = m_segments[id].data();
-            if (seg) {
-                // 计算延迟：基础 1 秒，每次重试翻倍，最大 30 秒
-                int delayMs = qMin(1000 * (1 << (retries - 1)), 30000);
-                qDebug() << "Segment" << id << "will retry after" << delayMs << "ms";
-                QTimer::singleShot(delayMs, seg, [seg]() {
-                    QMetaObject::invokeMethod(seg, "resumeDownload", Qt::QueuedConnection);
-                });
-            }
-        }
-        return;
-    }
-
-
-    // 如果重试次数超过 2 次，且尚未暂停，则触发整体暂停
-    if (retries >= 2 && !m_paused) {
-        locker.unlock();
-        pauseDownload();
-
-        // 30 秒后自动恢复
-        if (!m_autoResumeTimer) {
-            m_autoResumeTimer = new QTimer(this);
-            m_autoResumeTimer->setSingleShot(true);
-            connect(m_autoResumeTimer, &QTimer::timeout, this, &DownloadWorker::resumeDownload);
-        }
-        m_autoResumeTimer->start(30000); // 30 秒
-        return;
-    }
-
-
-    // 重试耗尽：将当前块放回队列，并唤醒/创建线程
-    qWarning() << "Segment" << id << "failed after max retries, re-enqueuing block";
-
-    if (id >= 0 && id < m_segments.size()) {
-        DownloadSegment *seg = m_segments[id].data();
-        if (seg) {
-            QPair<qint64, qint64> block = seg->currentBlock();
-            if (block.first >= 0 && block.second >= 0) {
-                QMutexLocker taskLocker(&m_taskMutex);
-                m_tasks.enqueue(block);
-                qDebug() << "Re-enqueued block:" << block.first << "-" << block.second;
-            }
-            // 清理当前分片状态
-            QMetaObject::invokeMethod(seg, "cleanupReply", Qt::BlockingQueuedConnection);
-        }
-    }
-
-    // 延迟检查并确保有线程处理队列
-    QTimer::singleShot(50, this, [this]() {
-        QMutexLocker locker(&m_mutex);
-        if (m_canceled.load()) return;
-
-        // 检查是否有活跃线程
-        bool hasActive = false;
-        for (const auto &ptr : m_threads) {
-            QThread *t = ptr.data();
-            if (t && t->isRunning()) {
-                hasActive = true;
-                break;
-            }
-        }
-
-        QMutexLocker taskLocker(&m_taskMutex);
-        if (!m_tasks.isEmpty() && !hasActive) {
-            qDebug() << "All threads idle but tasks remain, starting new thread";
-            // 创建一个新线程来处理剩余任务
-            int newId = m_segments.size();
-            DownloadSegment *seg = new DownloadSegment(newId, m_url, m_tempDir, this);
-            m_segments.append(QPointer<DownloadSegment>(seg));
-            QThread *thread = new QThread();
-            seg->moveToThread(thread);
-            // 连接信号（与原有逻辑一致）
-            connect(thread, &QThread::started, seg, &DownloadSegment::fetchNextBlock, Qt::QueuedConnection);
-            connect(seg, &DownloadSegment::progress, this, &DownloadWorker::onSegmentProgress, Qt::QueuedConnection);
-            connect(seg, &DownloadSegment::blockFinished, this, &DownloadWorker::onBlockFinished, Qt::QueuedConnection);
-            connect(seg, &DownloadSegment::error, this, &DownloadWorker::onSegmentError, Qt::QueuedConnection);
-            connect(seg, &DownloadSegment::finished, this, &DownloadWorker::onSegmentFinished, Qt::QueuedConnection);
-            connect(thread, &QThread::finished, seg, &QObject::deleteLater);
-            connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-            m_threads.append(QPointer<QThread>(thread));
-            thread->start();
-        }
-    });
-}
-
-void DownloadWorker::onBlockFinished(int id, qint64 start, qint64 end)
-{
-    Q_UNUSED(id);
-    Q_UNUSED(start);
-    Q_UNUSED(end);
-    int completed = ++m_completedBlocks;  // 原子递增
-    qDebug() << "Block finished, completed:" << completed << "/" << m_totalBlocks;
-    if (completed == m_totalBlocks) {
-        qDebug() << "All blocks finished, merging...";
-        mergeFiles();
+        // Segment 自己会重试，无需额外操作
+    } else {
+        qWarning() << "Segment" << id << "failed after max retries";
+        // 可以在此处通知 UI 某个块失败，但不中断整个下载
     }
 }
-
 
 void DownloadWorker::updateSpeed()
 {
+    if (m_finished) return;   // ★ 已完成，不再发进度
     QMutexLocker locker(&m_mutex);
     qint64 bytesDiff = m_downloadedSize - m_lastSpeedBytes;
-    // 定时器间隔 1000ms，所以速度 = 字节差
     m_speed = bytesDiff;
     m_lastSpeedBytes = m_downloadedSize;
     locker.unlock();
-
     emit progressUpdated(m_downloadedSize, m_fileSize, m_speed);
 }
 
-
 QPair<qint64, qint64> DownloadWorker::takeBlock()
 {
-    QMutexLocker locker(&m_taskMutex);
-    qDebug() << "takeBlock called, queue size:" << m_tasks.size();
-    if (m_tasks.isEmpty())
+    // 优先处理失败队列
+    {
+        QMutexLocker locker(&m_failedMutex);
+        if (!m_failedBlocks.isEmpty()) {
+            auto block = m_failedBlocks.dequeue();
+            qDebug() << "takeBlock from failed queue:" << block.first << "-" << block.second;
+            return block;
+        }
+    }
+
+    // 动态生成新块
+    qint64 start = m_nextStartPos.fetch_add(m_currentBlockSize);
+    if (start >= m_fileSize)
         return qMakePair(-1LL, -1LL);
-    auto block = m_tasks.dequeue();
-    qDebug() << "returning block:" << block.first << block.second << ", remaining:" << m_tasks.size();
-    return block;
+    qint64 end = qMin(start + m_currentBlockSize - 1, m_fileSize - 1);
+    qDebug() << "takeBlock new block:" << start << "-" << end;
+    return qMakePair(start, end);
 }
 
+void DownloadWorker::returnBlock(qint64 start, qint64 end)
+{
+    QMutexLocker locker(&m_taskMutex);
+    m_tasks.enqueue(qMakePair(start, end));
+    qDebug() << "Block returned to queue:" << start << "-" << end;
+}
 
 void DownloadWorker::cancelDownload()
 {
     bool expected = false;
-    if (!m_canceled.compare_exchange_strong(expected, true)) {
+    if (!m_canceled.compare_exchange_strong(expected, true))
         return;
-    }
 
     qDebug() << "Canceling download for" << m_fileName;
-
     m_speedUpdateTimer->stop();
 
-    // 通知所有分片取消
-    for (const auto &ptr : qAsConst(m_segments)) {
+    // 中止所有正在进行的网络请求
+    for (auto reply : m_replyToSegment.keys()) {
+        reply->abort();
+    }
+
+    if (m_fallbackReply) {                     // ← 新增
+        if (m_fallbackReply->isRunning())
+            m_fallbackReply->abort();
+    }
+
+
+    for (const auto &ptr : std::as_const(m_segments)) {
         DownloadSegment *seg = ptr.data();
         if (seg) {
             QMetaObject::invokeMethod(seg, "cancelDownload", Qt::BlockingQueuedConnection);
         }
     }
 
-    // 退出所有分片线程并等待
-    for (const auto &ptr : qAsConst(m_threads)) {
+    for (const auto &ptr : std::as_const(m_threads)) {
         QThread *thread = ptr.data();
         if (thread && thread->isRunning()) {
             thread->quit();
@@ -483,11 +417,10 @@ void DownloadWorker::cancelDownload()
     emit canceled();
 }
 
-
 void DownloadWorker::mergeFiles()
 {
     qDebug() << "Merging files for" << m_fileName;
-    emit mergeStarted();   // 通知 UI 开始合并
+    emit mergeStarted();
 
     QString finalPath = QString("%1/%2").arg(m_savePath, m_fileName);
     if (QFile::exists(finalPath))
@@ -499,13 +432,11 @@ void DownloadWorker::mergeFiles()
         return;
     }
 
-    // 获取所有块临时文件
     QDir dir(m_tempDir);
     QStringList filters;
     filters << "block_*.tmp";
     QFileInfoList files = dir.entryInfoList(filters, QDir::Files);
 
-    // 按起始偏移数值排序
     std::sort(files.begin(), files.end(), [](const QFileInfo &a, const QFileInfo &b) {
         qint64 startA = a.baseName().section('_', 1, 1).toLongLong();
         qint64 startB = b.baseName().section('_', 1, 1).toLongLong();
@@ -516,7 +447,6 @@ void DownloadWorker::mergeFiles()
     QByteArray buffer;
     buffer.reserve(bufSize);
 
-    // 合并相关
     int totalFiles = files.size();
     int processed = 0;
 
@@ -527,19 +457,13 @@ void DownloadWorker::mergeFiles()
             return;
         }
 
+        emit mergeProgress((totalFiles > 0) ? (processed * 100 / totalFiles) : 100);
 
-        // **发射合并进度**
-        int percent = (totalFiles > 0) ? (processed * 100 / totalFiles) : 100;
-        emit mergeProgress(percent);
-
-
-        // 验证文件名中的预期大小与实际文件大小是否一致
         qint64 start = fi.baseName().section('_', 1, 1).toLongLong();
         qint64 end = fi.baseName().section('_', 2, 2).toLongLong();
         qint64 expectedSize = end - start + 1;
         if (fi.size() != expectedSize) {
             qWarning() << "Block file" << fi.fileName() << "size mismatch: expected" << expectedSize << "actual" << fi.size();
-            // 可以选择继续合并（可能导致文件损坏）或报错停止。此处选择继续并警告。
         }
 
         QFile inFile(fi.absoluteFilePath());
@@ -566,93 +490,283 @@ void DownloadWorker::mergeFiles()
             remaining -= chunk;
         }
         inFile.close();
-
-        processed++;//合并进度++
+        processed++;
     }
 
-    // 最后确保100%
     emit mergeProgress(100);
-
-    outFile.close();    //确保输出文件关闭
+    outFile.close();
     cleanupTemp();
     qDebug() << "Merged file:" << finalPath;
 
     m_downloading = false;
     m_finished = true;
+
+    m_speedUpdateTimer->stop();
+    m_totalTimeMs = m_elapsedTimer.elapsed();
     emit finished();
 }
-
 
 void DownloadWorker::cleanupTemp()
 {
     if (!m_tempDir.isEmpty()) {
         QDir td(m_tempDir);
-        if (td.exists()) {
+        if (td.exists())
             td.removeRecursively();
-        }
     }
 }
-
 
 int DownloadWorker::progress() const
 {
     return m_fileSize > 0 ? static_cast<int>((m_downloadedSize * 100) / m_fileSize) : 0;
 }
 
-
 QString DownloadWorker::speed() const
 {
     return DownloadUtils::formatSpeed(m_speed);
 }
 
-
 QString DownloadWorker::timeRemaining() const
 {
     if (m_speed <= 0 || m_downloadedSize >= m_fileSize)
         return QStringLiteral("未知");
-
     qint64 remaining = m_fileSize - m_downloadedSize;
     int seconds = static_cast<int>(remaining / m_speed);
     return DownloadUtils::formatTimeFromSeconds(seconds);
 }
-
 
 qint64 DownloadWorker::totalTimeMs() const
 {
     return m_totalTimeMs;
 }
 
-void DownloadWorker::pauseDownload()
+void DownloadWorker::onSegmentProgressSubtract(int id, qint64 bytes)
 {
     QMutexLocker locker(&m_mutex);
-    if (m_paused || m_canceled.load()) return;
-    m_paused = true;
-    m_speedUpdateTimer->stop();
-
-    // 通知所有分段暂停
-    for (auto &ptr : m_segments) {
-        DownloadSegment *seg = ptr.data();
-        if (seg) {
-            QMetaObject::invokeMethod(seg, "cancelDownload", Qt::QueuedConnection); // 或专门的 pause 方法
-        }
-    }
-    // 注意：这里只是取消当前请求，线程保持运行，它们会因队列空而进入空闲
-    // 如果你有专门的暂停方法（不清理文件），改用那个
+    m_downloadedSize -= bytes;
+    if (m_downloadedSize < 0) m_downloadedSize = 0;
+    qDebug() << "Segment" << id << "subtracted" << bytes << "bytes, new total:" << m_downloadedSize;
+    emit progressUpdated(m_downloadedSize, m_fileSize, m_speed);
 }
 
-void DownloadWorker::resumeDownload()
+// ========== 新增网络请求处理 ==========
+void DownloadWorker::onSegmentRequestDownload(int segmentId, qint64 start, qint64 end,
+                                              const QUrl &url, const QString &tempFile)
 {
-    QMutexLocker locker(&m_mutex);
-    if (!m_paused || m_canceled.load()) return;
-    m_paused = false;
-    m_speedUpdateTimer->start();
+    if (m_canceled.load()) return;
+    if (m_useSingleThreadFallback) return; // 已降级，不再接受分块请求
 
-    // 唤醒所有空闲分段，让它们重新取块
-    for (auto &ptr : m_segments) {
-        DownloadSegment *seg = ptr.data();
-        if (seg) {
-            QMetaObject::invokeMethod(seg, "fetchNextBlock", Qt::QueuedConnection);
+    Q_UNUSED(tempFile);
+    QNetworkRequest request(url);
+    QString range = QString("bytes=%1-%2").arg(start).arg(end);
+    request.setRawHeader("Range", range.toLatin1());
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Qt Download Manager)");
+    // request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+
+    QNetworkReply *reply = m_sharedManager->get(request);
+    m_replyToSegment[reply] = segmentId;
+
+    connect(reply, &QNetworkReply::readyRead, this, &DownloadWorker::onReplyReadyRead);
+    connect(reply, &QNetworkReply::finished, this, &DownloadWorker::onReplyFinished);
+    connect(reply, &QNetworkReply::errorOccurred, this, &DownloadWorker::onReplyError);
+
+    QElapsedTimer t; t.start();
+    m_replyTimers[reply] = t;
+}
+
+void DownloadWorker::onReplyReadyRead()
+{
+    QNetworkReply *reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+    int segmentId = m_replyToSegment.value(reply, -1);
+    if (segmentId == -1) return;
+
+    QByteArray data = reply->readAll();
+    if (!data.isEmpty()) {
+        emit dataToSegment(segmentId, data);
+    }
+}
+
+void DownloadWorker::onReplyFinished()
+{
+
+
+    QNetworkReply *reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+
+    // ★ 打印本块耗时
+    if (m_replyTimers.contains(reply)) {
+        qint64 ms = m_replyTimers.take(reply).elapsed();
+        int segId = m_replyToSegment.value(reply, -1);
+        qDebug() << "reply finished seg" << segId << "耗时" << ms << "ms"
+                 << "Connection头" << reply->rawHeader("Connection");
+    }
+
+    int segmentId = m_replyToSegment.value(reply, -1);
+    if (segmentId != -1) {
+        m_replyToSegment.remove(reply);
+    }
+
+    bool success = (reply->error() == QNetworkReply::NoError);
+    QString errorMsg = success ? QString() : reply->errorString();
+
+    // 检测 403 Forbidden
+    int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status == 403) {
+        m_consecutiveEmptyBlocks++;
+        if (m_consecutiveEmptyBlocks >= 3 && m_threadCount > 1) {
+            qDebug() << "Too many 403, falling back to single thread";
+            startSingleThreadFallback();
+            reply->deleteLater();
+            return;
+        }
+    } else {
+        m_consecutiveEmptyBlocks = 0;
+    }
+
+    if (segmentId != -1) {
+        emit finishToSegment(segmentId, success, errorMsg);
+    }
+    reply->deleteLater();
+}
+
+void DownloadWorker::onReplyError(QNetworkReply::NetworkError code)
+{
+    qDebug() << "Network error occurred:" << code;
+}
+
+void DownloadWorker::returnBlock(qint64 start, qint64 end, bool needSplit)
+{
+    if (!needSplit) {
+        QMutexLocker locker(&m_failedMutex);
+        m_failedBlocks.enqueue(qMakePair(start, end));
+        qDebug() << "Block returned to queue (no split):" << start << "-" << end;
+        return;
+    }
+
+    qint64 size = end - start + 1;
+    if (size > m_minBlockSize * 2) {
+        qint64 mid = start + size / 2;
+        QMutexLocker locker(&m_failedMutex);
+        m_failedBlocks.enqueue(qMakePair(start, mid - 1));
+        m_failedBlocks.enqueue(qMakePair(mid, end));
+        qDebug() << "Split block" << start << "-" << end << "into"
+                 << start << "-" << mid-1 << "and" << mid << "-" << end;
+        // 降低全局块大小（避免后续新块过大）
+        m_currentBlockSize = qMax(m_minBlockSize, m_currentBlockSize / 2);
+    } else {
+        QMutexLocker locker(&m_failedMutex);
+        m_failedBlocks.enqueue(qMakePair(start, end));
+        qDebug() << "Block too small to split, returning as is:" << start << "-" << end;
+    }
+}
+
+void DownloadWorker::startSingleThreadFallback()
+{
+    if (m_useSingleThreadFallback) return;
+    m_useSingleThreadFallback = true;
+
+    // 停分段但不设 m_canceled
+    for (auto reply : m_replyToSegment.keys())
+        if (reply->isRunning()) reply->abort();
+    for (const auto &ptr : std::as_const(m_segments))
+        if (auto *seg = ptr.data())
+            QMetaObject::invokeMethod(seg, "cancelDownload", Qt::BlockingQueuedConnection);
+    for (const auto &ptr : std::as_const(m_threads)) {
+        QThread *t = ptr.data();
+        if (t && t->isRunning()) { t->quit(); t->wait(2000); }
+    }
+
+    // 重新开始单线程下载
+    qDebug() << "Starting single-thread fallback download for" << m_fileName;
+    QString finalPath = QString("%1/%2").arg(m_savePath, m_fileName);
+    m_fallbackFile.setFileName(finalPath);
+    if (!m_fallbackFile.open(QIODevice::WriteOnly)) {
+        emit errorOccurred("无法创建文件用于单线程下载");
+        return;
+    }
+
+    QNetworkRequest request(m_url);
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Qt Download Manager)");
+    // 不设置 Range 头，请求整个文件
+    m_fallbackReply = m_sharedManager->get(request);
+    connect(m_fallbackReply, &QNetworkReply::readyRead, this, &DownloadWorker::onFallbackReadyRead);
+    connect(m_fallbackReply, &QNetworkReply::finished, this, &DownloadWorker::onFallbackFinished);
+    connect(m_fallbackReply, &QNetworkReply::errorOccurred, this, &DownloadWorker::onFallbackError);
+}
+
+void DownloadWorker::onFallbackReadyRead()
+{
+    if (!m_fallbackReply || m_canceled.load()) return;
+    QByteArray data = m_fallbackReply->readAll();
+    if (!data.isEmpty()) {
+        m_fallbackFile.write(data);
+        m_downloadedSize += data.size();
+        emit progressUpdated(m_downloadedSize, m_fileSize, m_speed);
+    }
+}
+
+void DownloadWorker::onFallbackFinished()
+{
+    if (!m_fallbackReply) return;
+    bool success = (m_fallbackReply->error() == QNetworkReply::NoError);
+    m_fallbackFile.close();
+    if (success) {
+        qDebug() << "Single-thread fallback download finished";
+        m_finished = true;
+        m_totalTimeMs = m_elapsedTimer.elapsed();
+        m_speedUpdateTimer->stop();
+        emit finished();
+    } else {
+        if (!m_canceled.load()) {
+            emit errorOccurred(QString("单线程下载失败: %1").arg(m_fallbackReply->errorString()));
         }
     }
-    // 检查是否有线程已停止，必要时启动新线程处理剩余块（同 onSegmentError 逻辑）
+    m_fallbackReply->deleteLater();
+    m_fallbackReply = nullptr;
+}
+
+void DownloadWorker::onFallbackError(QNetworkReply::NetworkError code)
+{
+    qWarning() << "Fallback download error:" << code;
+}
+
+void DownloadWorker::startFallbackSingleThread() {
+    m_fallbackActive = true;
+    cancelDownload(); // 停止所有分块线程
+
+    // 重置速度相关的变量
+    m_lastSpeedBytes = 0;
+    m_downloadedSize = 0;   // 注意：如果已有部分分块数据，可能需要保留，但降级后是全新下载，可以清零
+    m_speed = 0;
+
+    // 重新启动速度定时器
+    m_speedUpdateTimer->start();
+
+    // 重新打开最终文件（覆盖）
+    QString finalPath = QString("%1/%2").arg(m_savePath, m_fileName);
+    m_fallbackFile.setFileName(finalPath);
+    if (!m_fallbackFile.open(QIODevice::WriteOnly)) { /* 错误处理 */ }
+    QNetworkRequest request(m_url);
+    request.setRawHeader("User-Agent", "Mozilla/5.0");
+    m_fallbackReply = m_sharedManager->get(request);
+    connect(m_fallbackReply, &QNetworkReply::readyRead, this, &DownloadWorker::onFallbackReadyRead);
+    connect(m_fallbackReply, &QNetworkReply::finished, this, &DownloadWorker::onFallbackFinished);
+}
+
+
+void DownloadWorker::abortBlock(int segmentId)
+{
+    QNetworkReply *target = nullptr;
+    {
+        QMutexLocker locker(&m_mutex);
+        for (auto it = m_replyToSegment.constBegin(); it != m_replyToSegment.constEnd(); ++it) {
+            if (it.value() == segmentId) {
+                target = it.key();
+                break;
+            }
+        }
+    }
+    if (target && target->isRunning()) {
+        target->abort();
+    }
 }

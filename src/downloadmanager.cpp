@@ -8,16 +8,14 @@
 
 DownloadManager::DownloadManager(QObject *parent)
     : QObject(parent)
-    , m_queueWatcher(new QTimer(this))
     , m_maxConcurrentDownloads(3) // 默认同时下载 3 个，可在头文件修改
 {
-    connect(m_queueWatcher, &QTimer::timeout, this, &DownloadManager::processQueue);
-    m_queueWatcher->start(1000); // 每秒检查一次队列
+
+
 }
 
 DownloadManager::~DownloadManager()
 {
-    m_queueWatcher->stop();
     cleanupAllDownloads();
 }
 
@@ -92,6 +90,7 @@ void DownloadManager::cancelAllDownloads()
 // 注意：此函数实际上是“取消所有并等待完成”，用于程序退出前
 void DownloadManager::waitForAll(int timeoutMs)
 {
+
     if (m_downloads.isEmpty()) return;
 
     QList<DownloadItem*> activeItems;
@@ -117,9 +116,9 @@ void DownloadManager::waitForAll(int timeoutMs)
 
     for (DownloadItem *item : activeItems) {
         // 连接信号，当任务结束（无论成功、失败、取消）时计数
-        connect(item, &DownloadItem::finished, this, [onItemDone]() { onItemDone(); }, Qt::QueuedConnection);
-        connect(item, &DownloadItem::error, this, [onItemDone]() { onItemDone(); }, Qt::QueuedConnection);
-        connect(item, &DownloadItem::canceled, this, [onItemDone]() { onItemDone(); }, Qt::QueuedConnection);
+        connect(item, &DownloadItem::finished, &loop, [onItemDone]() { onItemDone(); }, Qt::QueuedConnection);
+        connect(item, &DownloadItem::error, &loop, [onItemDone]() { onItemDone(); }, Qt::QueuedConnection);
+        connect(item, &DownloadItem::canceled, &loop, [onItemDone]() { onItemDone(); }, Qt::QueuedConnection);
 
         // 这里主动取消，确保程序能退出
         QMetaObject::invokeMethod(item, "cancel", Qt::QueuedConnection);
@@ -133,7 +132,7 @@ void DownloadManager::waitForAll(int timeoutMs)
         for (DownloadItem *item : activeItems) {
             if (item) {
                 item->blockSignals(true);
-                item->deleteLater();
+                item->cancel();
             }
         }
         QThread::msleep(100);
@@ -160,28 +159,22 @@ void DownloadManager::onDownloadProgress()
     emit downloadProgressChanged();
 }
 
-void DownloadManager::onDownloadFinished(DownloadItem *item)
+void DownloadManager::onDownloadFinished(DownloadItem *)
 {
-    Q_UNUSED(item);
     emit downloadProgressChanged();
-    // 任务完成后，检查队列是否有新任务可以启动
-    QTimer::singleShot(100, this, [this]() { processQueue(); });
+    processQueue();     // 直接调，不需要 singleShot
 }
 
-void DownloadManager::onDownloadError(DownloadItem *item, const QString &error)
+void DownloadManager::onDownloadError(DownloadItem *, const QString &)
 {
-    Q_UNUSED(item);
-    Q_UNUSED(error);
     emit downloadProgressChanged();
-    // 出错后也释放一个并发槽位
-    QTimer::singleShot(100, this, [this]() { processQueue(); });
+    processQueue();
 }
 
-void DownloadManager::onDownloadCanceled(DownloadItem *item)
+void DownloadManager::onDownloadCanceled(DownloadItem *)
 {
-    Q_UNUSED(item);
     emit downloadProgressChanged();
-    QTimer::singleShot(100, this, [this]() { processQueue(); });
+    processQueue();
 }
 
 void DownloadManager::cleanupAllDownloads()
@@ -193,25 +186,20 @@ void DownloadManager::cleanupAllDownloads()
         if (item) {
             item->blockSignals(true); // 防止清理过程中触发信号
             item->cancel();
-            item->deleteLater();
         }
     }
     m_downloads.clear();
 }
 
+// downloadmanager.cpp
+// 不要 deleteLater，只负责取消和从容器移除
 void DownloadManager::removeItems(const QList<DownloadItem*> &items)
 {
     for (DownloadItem *item : items) {
         if (!item) continue;
-
-        // 1. 取消下载
         item->cancel();
-
-        // 2. 从容器中移除
         m_downloads.removeAll(item);
         m_waitingQueue.removeAll(item);
-
-        // 3. 异步删除 (让事件循环处理，避免析构冲突)
-        item->deleteLater();
+        // 不 deleteLater —— UI 是 owner，交给 QListWidget 删
     }
 }

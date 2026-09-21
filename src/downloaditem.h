@@ -64,6 +64,14 @@ private:
 private:
     qint64 m_averageSpeed = 0;
     qint64 m_totalTimeMs = 0;
+private:
+    qint64 m_fileSize = 0;      // 真实的文件大小（字节）
+    qint64 m_total = 0;
+    qint64 m_currentSpeed = 0;
+    bool   m_finished = false;
+
+    qint64 m_downloaded = 0;
+
 };
 
 #endif // DOWNLOADITEM_H

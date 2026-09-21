@@ -25,26 +25,15 @@ DownloadItem::DownloadItem(const QUrl &url, const QString &savePath, QWidget *pa
     m_workerThread = new QThread();
     // 将 worker 移动到子线程
     m_worker->moveToThread(m_workerThread);
-    // --- 新增：连接线程结束信号，确保 worker 安全删除 ---
-    connect(m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
-    connect(m_workerThread, &QThread::finished, m_workerThread, &QObject::deleteLater);
     m_workerThread->start();
 
 
 
-    connect(m_worker, &DownloadWorker::progressUpdated,
-            this, &DownloadItem::onWorkerProgress, Qt::QueuedConnection);
-    connect(m_worker, &DownloadWorker::finished,
-            this, &DownloadItem::onWorkerFinished, Qt::QueuedConnection);
-    connect(m_worker, &DownloadWorker::errorOccurred,
-            this, &DownloadItem::onWorkerError, Qt::QueuedConnection);
-    connect(m_worker, &DownloadWorker::canceled,
-            this, &DownloadItem::onWorkerCanceled, Qt::QueuedConnection);
+    connect(m_worker, &DownloadWorker::progressUpdated,this, &DownloadItem::onWorkerProgress, Qt::QueuedConnection);
+    connect(m_worker, &DownloadWorker::finished,this, &DownloadItem::onWorkerFinished, Qt::QueuedConnection);
+    connect(m_worker, &DownloadWorker::errorOccurred,this, &DownloadItem::onWorkerError, Qt::QueuedConnection);
+    connect(m_worker, &DownloadWorker::canceled,this, &DownloadItem::onWorkerCanceled, Qt::QueuedConnection);
 
-    connect(m_worker, &DownloadWorker::mergeStarted,
-            this, [this]() {
-                m_statusLabel->setText("文件合并中...");
-            }, Qt::QueuedConnection);
 
     // 合并开始
     connect(m_worker, &DownloadWorker::mergeStarted, this, [this]() {
@@ -84,26 +73,20 @@ DownloadItem::DownloadItem(const QUrl &url, const QString &savePath, QWidget *pa
 
 DownloadItem::~DownloadItem()
 {
+    if (m_worker)
+        disconnect(m_worker, nullptr, this, nullptr);
+
     if (m_workerThread && m_workerThread->isRunning()) {
-        // 1. 通知 worker 取消下载
-        QMetaObject::invokeMethod(m_worker, "cancelDownload", Qt::QueuedConnection);
-
-        // 2. 停止线程事件循环
         m_workerThread->quit();
-
-        // 3. 等待线程结束 (最多等 3 秒)
         if (!m_workerThread->wait(3000)) {
-            qWarning() << "Worker thread did not finish in time, terminating...";
+            qWarning() << "worker thread timeout, terminating";
             m_workerThread->terminate();
             m_workerThread->wait();
         }
-
-        // 4. 清理工作
-        // 注意：因为连接了 finished -> deleteLater，worker 和 thread 会自动删除
-        // 但为了保险起见，如果 wait 成功，这里手动置空即可
-        m_worker = nullptr;
-        m_workerThread = nullptr;
     }
+
+    delete m_worker;        m_worker = nullptr;
+    delete m_workerThread;  m_workerThread = nullptr;
 }
 
 void DownloadItem::setupUI()
@@ -117,11 +100,10 @@ void DownloadItem::setupUI()
     m_progressBar->setMaximum(100);
 
     m_statusLabel = new QLabel("等待中...", this);
-    m_speedLabel = new QLabel("速度: 0 B/s", this);
-    m_sizeLabel = new QLabel("  |大小: 计算中...", this);
-    m_timeLabel = new QLabel("  |剩余时间: 未知", this);
+    m_speedLabel = new QLabel("速度: 未知", this);
+    m_sizeLabel = new QLabel("大小: 未知", this);
+    m_timeLabel = new QLabel("剩余时间: 未知", this);
     m_cancelBtn = new QPushButton("取消", this);
-    m_cancelBtn->setStyleSheet("background-color: red;");
     connect(m_cancelBtn, &QPushButton::clicked, this, &DownloadItem::cancel);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -134,7 +116,21 @@ void DownloadItem::setupUI()
 
     QHBoxLayout *infoLayout = new QHBoxLayout();
     infoLayout->addWidget(m_sizeLabel);
+
+    {
+        auto *sep = new QLabel("|", this);
+        sep->setStyleSheet("color: #999;");
+        infoLayout->addWidget(sep);
+    }
+
     infoLayout->addWidget(m_speedLabel);
+
+    {
+        auto *sep = new QLabel("|", this);
+        sep->setStyleSheet("color: #999;");
+        infoLayout->addWidget(sep);
+    }
+
     infoLayout->addWidget(m_timeLabel);
     infoLayout->addStretch();
     mainLayout->addLayout(infoLayout);
@@ -165,8 +161,8 @@ void DownloadItem::cancel()
     QMetaObject::invokeMethod(m_worker, "cancelDownload", Qt::QueuedConnection);
     m_statusLabel->setText("已取消");
     m_progressBar->setValue(0);
-    m_speedLabel->setText("  |速度: 0 B/s");
-    m_timeLabel->setText("  |剩余时间: 已取消");
+    m_speedLabel->setText("速度: 未知");
+    m_timeLabel->setText("剩余时间: 已取消");
 }
 
 QString DownloadItem::fileName() const
@@ -178,30 +174,36 @@ QString DownloadItem::fileName() const
 
 QString DownloadItem::status() const { return m_statusLabel->text(); }
 int DownloadItem::progress() const { return m_progressBar->value(); }
-QString DownloadItem::fileSize() const { return m_sizeLabel->text().mid(3); } // 去掉“大小: ”
-
-
-bool DownloadItem::isFinished() const { return m_worker && m_worker->isFinished(); }
-
-QString DownloadItem::speed() const
-{
-    if (isFinished() && m_averageSpeed > 0) {
-        return DownloadUtils::formatSpeed(m_averageSpeed);
-    }
-    return m_speedLabel->text().mid(3); // 去掉“速度: ”
+QString DownloadItem::fileSize() const {
+    if (m_fileSize <= 0) return "未知";
+    return DownloadUtils::formatFileSize(m_fileSize);
 }
 
-QString DownloadItem::timeRemaining() const
-{
-    if (isFinished()) {
+bool DownloadItem::isFinished() const { return m_finished; }
+
+QString DownloadItem::speed() const {
+    if (isFinished() && m_averageSpeed > 0)
+        return DownloadUtils::formatSpeed(m_averageSpeed);
+    return DownloadUtils::formatSpeed(m_currentSpeed);
+}
+
+QString DownloadItem::timeRemaining() const {
+    if (isFinished())
         return DownloadUtils::formatTimeFromMs(m_totalTimeMs);
+    if (m_currentSpeed > 0 && m_total > 0) {
+        qint64 remaining = m_total - m_downloaded;
+        return DownloadUtils::formatTimeFromSeconds(remaining / m_currentSpeed);
     }
-    return m_timeLabel->text().mid(5); // 去掉“剩余时间: ”
+    return "未知";
 }
 
 void DownloadItem::onWorkerProgress(qint64 downloaded, qint64 total, qint64 speed)
 {
     //qDebug() << "onWorkerProgress: speed=" << speed;
+    if (m_finished) return;   // ★ 已结束，忽略迟到的进度
+    m_downloaded = downloaded;   //
+    m_total = total;            // ← 存真值
+    m_currentSpeed = speed;     // ← 存真值
 
     if (total > 0) {
         int percent = static_cast<int>((downloaded * 100) / total);
@@ -215,14 +217,14 @@ void DownloadItem::onWorkerProgress(qint64 downloaded, qint64 total, qint64 spee
         m_sizeLabel->setText("大小: 未知");
     }
 
-    m_speedLabel->setText(QString("  |速度: %1").arg(DownloadUtils::formatSpeed(speed)));
+    m_speedLabel->setText(QString("速度: %1").arg(DownloadUtils::formatSpeed(speed)));
 
     if (speed > 0 && total > 0) {
         qint64 remaining = total - downloaded;
         int seconds = static_cast<int>(remaining / speed);
-        m_timeLabel->setText(QString("  |剩余时间: %1").arg(DownloadUtils::formatTimeFromSeconds(seconds)));
+        m_timeLabel->setText(QString("剩余时间: %1").arg(DownloadUtils::formatTimeFromSeconds(seconds)));
     } else {
-        m_timeLabel->setText("  |剩余时间: 计算中...");
+        m_timeLabel->setText("剩余时间: 未知");
     }
 
     emit progressChanged();
@@ -231,34 +233,60 @@ void DownloadItem::onWorkerProgress(qint64 downloaded, qint64 total, qint64 spee
 void DownloadItem::onWorkerFinished()
 {
     qDebug() << "DownloadItem::onWorkerFinished() called for" << fileName();
+
+    m_finished = true;                    // ← 顺便设一下（如果你还没设）
     m_statusLabel->setText("已完成");
     m_progressBar->setValue(100);
 
     if (m_worker) {
         m_totalTimeMs = m_worker->totalTimeMs();
         qint64 totalBytes = m_worker->fileSize();
+
+        qDebug() << "onWorkerFinished: totalTimeMs =" << m_totalTimeMs
+                 << "totalBytes =" << totalBytes;
+
         if (m_totalTimeMs > 0 && totalBytes > 0) {
-            m_averageSpeed = totalBytes * 1000 / m_totalTimeMs; // 字节/秒
+            m_averageSpeed = totalBytes * 1000 / m_totalTimeMs;   // 字节/秒
         }
     }
 
+    // ★ 把总结写到 label
+    if (m_averageSpeed > 0) {
+        m_speedLabel->setText(QString("平均速度: %1")
+                                  .arg(DownloadUtils::formatSpeed(m_averageSpeed)));
+    } else {
+        m_speedLabel->setText("平均速度: -");
+    }
+
+    if (m_totalTimeMs > 0) {
+        m_timeLabel->setText(QString("用时: %1")
+                                 .arg(DownloadUtils::formatTimeFromMs(m_totalTimeMs)));
+    } else {
+        m_timeLabel->setText("用时: -");
+    }
+
+    qDebug() << "final m_averageSpeed =" << m_averageSpeed
+             << "speedLabel text =" << m_speedLabel->text()
+             << "timeLabel text =" << m_timeLabel->text();
     emit finished(this);
 }
 
 void DownloadItem::onWorkerError(const QString &errorMsg)  // 将参数名改为 errorMsg
 {
+    m_finished = true;
     m_statusLabel->setText("下载失败");
-    m_speedLabel->setText("  |速度: 0 B/s");
-    m_timeLabel->setText("  |剩余时间: 失败");
+    m_speedLabel->setText("速度: 未知");
+    m_timeLabel->setText("剩余时间: 失败");
     QMessageBox::warning(this, "下载错误", errorMsg);
     emit error(this, errorMsg);  // 这里就不会冲突了
 }
 
 void DownloadItem::onWorkerCanceled()
 {
+    m_finished = true;
     m_statusLabel->setText("已取消");
     m_progressBar->setValue(0);
-    m_speedLabel->setText("  |速度: 0 B/s");
-    m_timeLabel->setText("  |剩余时间: 已取消");
+    m_speedLabel->setText("速度: 未知");
+    m_timeLabel->setText("剩余时间: 已取消");
     emit canceled(this);
 }

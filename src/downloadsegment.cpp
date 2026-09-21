@@ -1,16 +1,12 @@
 #include "downloadsegment.h"
 #include "downloadworker.h"
 #include <QThread>
-#include <QNetworkRequest>
-#include <QNetworkReply>
-#include <QFile>
 #include <QDir>
 #include <QDebug>
 #include <QMutexLocker>
 
 typedef QPair<qint64, qint64> BlockPair;
 
-// 构造函数
 DownloadSegment::DownloadSegment(int id, const QUrl &url, const QString &tempDir,
                                  DownloadWorker *worker, QObject *parent)
     : QObject(parent)
@@ -23,8 +19,7 @@ DownloadSegment::DownloadSegment(int id, const QUrl &url, const QString &tempDir
     , m_downloaded(0)
     , m_canceled(false)
     , m_finished(false)
-    , m_manager(new QNetworkAccessManager(this))
-    , m_reply(nullptr)
+    , m_waitingForReply(false)
 {
     m_watchdog = new QTimer(this);
     m_watchdog->setInterval(WATCHDOG_TIMEOUT_MS);
@@ -35,13 +30,10 @@ DownloadSegment::DownloadSegment(int id, const QUrl &url, const QString &tempDir
 DownloadSegment::~DownloadSegment()
 {
     qDebug() << "DownloadSegment destructor for segment" << m_id;
-    cleanupReply();
-    if (m_watchdog) {
+    if (m_watchdog)
         m_watchdog->stop();
-    }
-    if (m_file.isOpen()) {
+    if (m_file.isOpen())
         m_file.close();
-    }
 }
 
 void DownloadSegment::fetchNextBlock()
@@ -54,7 +46,6 @@ void DownloadSegment::fetchNextBlock()
     }
 
     BlockPair block = m_worker->takeBlock();
-
     if (block.first == -1) {
         qDebug() << "Segment" << m_id << "no more blocks, finishing thread";
         m_finished.store(true);
@@ -70,112 +61,135 @@ void DownloadSegment::fetchNextBlock()
     m_currentTempFile = QString("%1/block_%2_%3.tmp").arg(m_tempDir).arg(m_currentStart).arg(m_currentEnd);
     m_downloaded = 0;
 
-    qDebug() << "Segment" << m_id << "starting block:" << m_currentStart << "-" << m_currentEnd;
-
-    if (!openFile())
+    if (!openFile()) {
+        // 打开文件失败，将块放回并继续
+        m_worker->returnBlock(m_currentStart, m_currentEnd);
+        locker.unlock();
+        fetchNextBlock();
         return;
+    }
 
-    setupRequest(m_currentStart, m_currentEnd);
+    // 发射信号，请求 Worker 开始下载该块
+    emit requestDownloadBlock(m_id, m_currentStart, m_currentEnd, m_url, m_currentTempFile);
+    m_waitingForReply = true;
     m_watchdog->start();
 }
 
-
-
-
-
-void DownloadSegment::cancelDownload()
+void DownloadSegment::onDataReceived(int segmentId, const QByteArray &data)
 {
-    QMutexLocker locker(&m_mutex);
-    if (m_canceled.load())
-        return;
+    if (segmentId != m_id) return;
+    if (m_canceled.load()) return;
 
-    qDebug() << "Segment" << m_id << "canceling";
-    m_canceled.store(true);
+    QMutexLocker locker(&m_mutex);
+    if (!m_file.isOpen()) return;
+
+    qint64 written = m_file.write(data);
+    if (written > 0) {
+        m_downloaded += written;
+        emit progress(m_id, written);
+        m_watchdog->start(); // 收到数据，重置看门狗
+    } else {
+        qWarning() << "Segment" << m_id << "write error:" << m_file.errorString();
+        emit error(m_id, QString("写入文件失败: %1").arg(m_file.errorString()));
+        // 这里不立即取消，让后续的 onBlockDownloadFinished 处理失败
+    }
+}
+
+void DownloadSegment::onBlockDownloadFinished(int segmentId, bool success, const QString &errorMsg)
+{
+    if (m_canceled.load()) return;
+    if (segmentId != m_id) return;
+    m_waitingForReply = false;
     m_watchdog->stop();
+    closeFile();
 
-
-    cleanupReply();
-
-    if (m_file.isOpen())
-        m_file.close();
-
-    // 删除当前块的临时文件
-    if (!m_currentTempFile.isEmpty() && QFile::exists(m_currentTempFile)) {
-        QFile::remove(m_currentTempFile);
-        qDebug() << "Segment" << m_id << "temp file removed";
-    }
-
-    emit canceled(m_id);
-    QThread::currentThread()->quit();
-}
-
-void DownloadSegment::onReadyRead()
-{
-    QMutexLocker locker(&m_mutex);
-
-    m_watchdog->start(); // 收到数据，重置看门狗
-
-    QByteArray data = m_reply->readAll();
-    if (!data.isEmpty()) {
-        qint64 written = m_file.write(data);
-        if (written > 0) {
-            m_downloaded += written;
-            emit progress(m_id, written);
-        } else {
-            qDebug() << "Segment" << m_id << "write error:" << m_file.errorString();
-            emit error(m_id, QString("写入文件失败: %1").arg(m_file.errorString()));
-            // 不立即取消，让重试机制处理
-        }
-    }
-}
-
-void DownloadSegment::onFinished()
-{
-    QMutexLocker locker(&m_mutex);
-
-    if (m_file.isOpen()) {
-        m_file.flush();
-        m_file.close();
-    }
-
-    if (!m_reply)
-        return;
-
-    if (m_reply->error() == QNetworkReply::NoError) {
+    if (success) {
         qint64 fileSize = m_file.size();
         qint64 expectedSize = m_currentEnd - m_currentStart + 1;
         if (fileSize >= expectedSize) {
-            m_watchdog->stop();
             qDebug() << "Segment" << m_id << "block finished, size:" << fileSize;
-
-            // 发出块完成信号，通知 worker 更新计数
             emit blockFinished(m_id, m_currentStart, m_currentEnd);
-
-            // 继续取下一个块（注意：这里需要解锁，因为 fetchNextBlock 会再次加锁）
-            locker.unlock();
-            fetchNextBlock();
-            return; // 注意：不退出线程，继续循环
+            // 继续取下一个块（必须在解锁后调用，避免死锁）
+            QMetaObject::invokeMethod(this, "fetchNextBlock", Qt::QueuedConnection);
         } else {
             emit error(m_id, QString("块下载不完整，预期 %1 字节，实际 %2 字节")
                                  .arg(expectedSize).arg(fileSize));
+            returnBlockAndContinue();
         }
-    } else if (m_reply->error() == QNetworkReply::OperationCanceledError) {
-        qDebug() << "Segment" << m_id << "operation canceled";
     } else {
-        emit error(m_id, QString("网络错误: %1").arg(m_reply->errorString()));
+        emit error(m_id, errorMsg);
+        returnBlockAndContinue();
     }
-
-    cleanupReply();
 }
 
-void DownloadSegment::onError(QNetworkReply::NetworkError code)
+void DownloadSegment::cancelDownload()
 {
-    QMutexLocker locker(&m_mutex);
-    if (!m_reply) return;
+    {
+        QMutexLocker locker(&m_mutex);
+        if (m_canceled.load()) return;
+        m_canceled.store(true);
+        m_watchdog->stop();
 
-    if (code != QNetworkReply::OperationCanceledError) {
-        emit error(m_id, QString("网络错误 %1: %2").arg(code).arg(m_reply->errorString()));
+        if (m_file.isOpen())
+            m_file.close();
+
+        if (!m_currentTempFile.isEmpty() && QFile::exists(m_currentTempFile)) {
+            QFile::remove(m_currentTempFile);
+        }
+        emit canceled(m_id);
     }
+
+    // 关键：通知 worker abort 这个 segment 的网络请求
+    if (m_worker) {
+        QMetaObject::invokeMethod(m_worker, "abortBlock",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(int, m_id));
+    }
+    // 不要再 QThread::currentThread()->quit()
+}
+
+void DownloadSegment::onWatchdogTimeout()
+{
+    if (!m_canceled.load() && !m_finished.load() && m_waitingForReply) {
+        qWarning() << "Segment" << m_id << "watchdog timeout, retrying...";
+        emit error(m_id, tr("下载超时，正在重试..."));
+        cleanupForRetry();
+        returnBlockAndContinue();
+    }
+}
+
+void DownloadSegment::cleanupForRetry()
+{
+    m_waitingForReply = false;
+    // 注意：不需要主动 abort 网络请求，因为 Worker 会在 onBlockDownloadFinished 中处理超时失败
+    if (m_file.isOpen())
+        m_file.close();
+}
+
+void DownloadSegment::returnBlockAndContinue()
+{
+    // 通知 Worker 减去已下载但无效的进度
+    if (m_downloaded > 0)
+        emit progressSubtract(m_id, m_downloaded);
+    if (m_currentStart >= 0 && m_currentEnd >= 0) {
+        // 通知 worker 放回并拆分
+        QMetaObject::invokeMethod(m_worker, "returnBlock",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(qint64, m_currentStart),
+                                  Q_ARG(qint64, m_currentEnd),
+                                  Q_ARG(bool, true));   // 拆分失败块
+    }
+
+    closeFile();
+    if (!m_currentTempFile.isEmpty() && QFile::exists(m_currentTempFile))
+        QFile::remove(m_currentTempFile);
+
+    m_downloaded = 0;
+    m_currentStart = 0;
+    m_currentEnd = -1;
+
+    // 继续取下一个块（可能是放回的这个块）
+    fetchNextBlock();
 }
 
 bool DownloadSegment::openFile()
@@ -188,16 +202,25 @@ bool DownloadSegment::openFile()
     }
 
     m_file.setFileName(m_currentTempFile);
-
     QIODevice::OpenMode mode = QIODevice::WriteOnly;
     if (m_file.exists()) {
         qint64 existingSize = m_file.size();
-        if (existingSize > 0) {
-            m_currentStart += existingSize; // 调整当前块的起始位置（用于续传）
+        if (existingSize > 0 && existingSize < (m_currentEnd - m_currentStart + 1)) {
+            // 续传：调整起始位置并追加
+            m_currentStart += existingSize;
             m_downloaded = existingSize;
             mode = QIODevice::Append;
             qDebug() << "Segment" << m_id << "resuming block from byte" << m_currentStart
                      << ", existing size:" << existingSize;
+        } else if (existingSize >= (m_currentEnd - m_currentStart + 1)) {
+            // 文件已经完整（可能之前下载完成但未通知），直接返回成功
+            qDebug() << "Segment" << m_id << "temp file already complete, reusing";
+            return true;
+        } else {
+            // 文件存在但大小异常，删除重建
+            qWarning() << "Segment" << m_id << "invalid existing temp file, removing";
+            m_file.remove();
+            mode = QIODevice::WriteOnly;
         }
     }
 
@@ -218,63 +241,3 @@ void DownloadSegment::closeFile()
     }
 }
 
-void DownloadSegment::setupRequest(qint64 start, qint64 end)
-{
-    if (!m_manager) {
-        m_manager = new QNetworkAccessManager(this);
-    }
-
-    QNetworkRequest request(m_url);
-    QString range = QString("bytes=%1-%2").arg(start).arg(end);
-    request.setRawHeader("Range", range.toLatin1());
-    request.setRawHeader("User-Agent", "Mozilla/5.0 (Qt Download Manager)");
-    request.setAttribute(QNetworkRequest::HttpPipeliningAllowedAttribute, true);
-
-    qDebug() << "Segment" << m_id << "requesting range:" << range;
-
-    cleanupReply();
-
-    m_reply = m_manager->get(request);
-
-    // 使用直接连接，因为我们在同一个线程中
-    connect(m_reply, &QNetworkReply::readyRead, this, &DownloadSegment::onReadyRead, Qt::DirectConnection);
-    connect(m_reply, &QNetworkReply::finished, this, &DownloadSegment::onFinished, Qt::DirectConnection);
-    connect(m_reply, &QNetworkReply::errorOccurred, this, &DownloadSegment::onError, Qt::DirectConnection);
-}
-
-void DownloadSegment::cleanupReply()
-{
-    if (m_reply) {
-        m_reply->disconnect();
-        m_reply->abort();
-        m_reply->deleteLater();
-        m_reply = nullptr;
-    }
-}
-
-void DownloadSegment::onWatchdogTimeout()
-{
-    if (!m_canceled.load() && !m_finished.load()) {
-        qWarning() << "Segment" << m_id << "watchdog timeout, retrying...";
-        emit error(m_id, tr("下载超时，正在重试..."));
-    }
-}
-
-
-void DownloadSegment::resumeDownload()
-{
-    QMutexLocker locker(&m_mutex);
-    if (m_canceled.load() || m_finished.load()) return;
-    if (m_currentStart < 0 || m_currentEnd < 0) {
-        locker.unlock();
-        fetchNextBlock();
-        return;
-    }
-    cleanupReply();
-    if (!openFile()) {
-        emit error(m_id, "无法重新打开文件进行续传");
-        return;
-    }
-    setupRequest(m_currentStart, m_currentEnd);
-    m_watchdog->start();
-}

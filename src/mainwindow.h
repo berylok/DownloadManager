@@ -82,7 +82,9 @@ private:
 private:
     QAction *m_aboutAction;
     QAction *m_checkUpdateAction;
-
+private:
+    void cleanup();
+    bool m_cleanedUp = false;
 };
 
 #endif // MAINWINDOW_H

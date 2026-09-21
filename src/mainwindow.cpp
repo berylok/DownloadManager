@@ -75,33 +75,65 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    qDebug() << "~MainWindow() start";
+    cleanup();
+}
 
-    // 先隐藏托盘，避免托盘保持进程
-    if (m_trayIcon) {
-        m_trayIcon->hide();
+void MainWindow::quitApplication()
+{
+    if (m_cleanedUp) return;
+    cleanup();
+    QApplication::quit();
+}
+
+void MainWindow::cleanup()
+{
+    if (m_cleanedUp) return;
+    m_cleanedUp = true;
+
+    // 1. 停定时器
+    if (m_statusUpdateTimer) {
+        m_statusUpdateTimer->stop();
+        delete m_statusUpdateTimer;
+        m_statusUpdateTimer = nullptr;
     }
 
-    // 取消并等待下载结束（DownloadManager::waitForAll 已实现/建议实现）
+    // 2. 断开所有来自下载管理器的信号，防止清理过程中回调进 UI
+    if (m_downloadManager) {
+        disconnect(m_downloadManager, nullptr, this, nullptr);
+    }
+
+    // 3. 停止并删除下载管理器（此时它不再拥有 item，只是取消任务）
     if (m_downloadManager) {
         m_downloadManager->cancelAllDownloads();
-        m_downloadManager->waitForAll(3000); // 等待最多3s
+        m_downloadManager->waitForAll(3000);
         delete m_downloadManager;
         m_downloadManager = nullptr;
     }
 
-    // 中止并释放所有挂起的 replies
+    // 4. 清空列表：这会 delete 每个 itemWidget（即 DownloadItem）
+    if (m_downloadList) {
+        m_downloadList->clear();
+        m_downloadList = nullptr;   // 由 parent 负责最终 delete
+    }
+
+    // 5. 托盘
+    if (m_trayIcon) {
+        m_trayIcon->hide();
+        m_trayIcon->setContextMenu(nullptr);
+        delete m_trayIcon;
+        m_trayIcon = nullptr;
+    }
+    // m_trayMenu 是 this 的子对象，跟着 this 一起销毁，无需手动删
+
+    // 6. 网络管理器（若确认没用可整块删掉）
     if (m_networkManager) {
         const auto replies = m_networkManager->findChildren<QNetworkReply*>();
         for (QNetworkReply *r : replies) {
-            if (r->isRunning()) r->abort();
-            r->deleteLater();
+            if (r && r->isRunning()) r->abort();
         }
-        m_networkManager->deleteLater();
+        delete m_networkManager;
         m_networkManager = nullptr;
     }
-
-    qDebug() << "~MainWindow() end";
 }
 
 void MainWindow::setupUI()
@@ -115,7 +147,6 @@ void MainWindow::setupUI()
     m_urlEdit = new QLineEdit(this);
     m_urlEdit->setPlaceholderText("输入下载URL或拖拽文件到此");
     m_addButton = new QPushButton("添加下载", this);
-    m_addButton->setStyleSheet("background-color: lightgreen;");
 
     addLayout->addWidget(m_urlEdit);
     addLayout->addWidget(m_addButton);
@@ -477,83 +508,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 }
 
-// 在 mainwindow.cpp 的 quitApplication() 函数中添加更多调试信息
-void MainWindow::quitApplication()
-{
-    qDebug() << "MainWindow::quitApplication() called";
 
-    static bool quitting = false;
-    if (quitting) {
-        qDebug() << "Already quitting, ignoring duplicate call";
-        return;
-    }
-    quitting = true;
-
-    // 停止状态更新定时器
-    if (m_statusUpdateTimer) {
-        qDebug() << "1. Stopping status update timer...";
-        m_statusUpdateTimer->stop();
-        delete m_statusUpdateTimer;
-        m_statusUpdateTimer = nullptr;
-        qDebug() << "   Status update timer stopped";
-    }
-
-    // 停止并清理下载管理器（先停止所有下载）
-    if (m_downloadManager) {
-        qDebug() << "2. Cancelling all downloads...";
-        m_downloadManager->cancelAllDownloads();  // DownloadManager 的方法名没变
-        qDebug() << "3. Waiting for all downloads to finish...";
-        m_downloadManager->waitForAll(3000);
-
-        qDebug() << "4. Deleting download manager...";
-        delete m_downloadManager;
-        m_downloadManager = nullptr;
-        qDebug() << "   Download manager deleted";
-    }
-
-    // 隐藏托盘
-    if (m_trayIcon) {
-        qDebug() << "5. Hiding tray icon...";
-        m_trayIcon->hide();
-        delete m_trayIcon;
-        m_trayIcon = nullptr;
-        qDebug() << "   Tray icon hidden";
-    }
-
-    // 清理网络管理器
-    if (m_networkManager) {
-        qDebug() << "6. Cleaning up network manager...";
-        const auto replies = m_networkManager->findChildren<QNetworkReply*>();
-        qDebug() << "   Found" << replies.size() << "network replies";
-        for (QNetworkReply *reply : replies) {
-            if (reply && reply->isRunning()) {
-                qDebug() << "   Aborting reply:" << reply;
-                reply->abort();
-                reply->deleteLater();
-            }
-        }
-
-        QCoreApplication::processEvents();
-        QThread::msleep(100);
-
-        delete m_networkManager;
-        m_networkManager = nullptr;
-        qDebug() << "   Network manager cleaned up";
-    }
-
-    // 清理下载列表
-    if (m_downloadList) {
-        qDebug() << "7. Cleaning up download list...";
-        m_downloadList->clear();
-        qDebug() << "   Download list cleared";
-    }
-
-    QThread::msleep(200);
-    QCoreApplication::processEvents();
-
-    qDebug() << "8. MainWindow::quitApplication() completed, calling QApplication::quit()";
-    QApplication::quit();
-}
 
 void MainWindow::setupNetworkOptimization()
 {

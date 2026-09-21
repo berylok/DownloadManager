@@ -1,40 +1,38 @@
-// main.cpp
+
+
+
 #include <QApplication>
 #include <QIcon>
 #include "mainwindow.h"
 
-#include <QRandomGenerator>
+// #include <QRandomGenerator>
 #include <QString>
+#include <QPair>
 
-#include <QPalette>
+#ifndef APP_VERSION
+#define APP_VERSION "0.0.0"
+#endif
 
 int main(int argc, char *argv[])
 {
+    // // 强制使用XCB（X11）平台插件，通过XWayland运行
+    // qputenv("QT_QPA_PLATFORM", "xcb");
+
     qRegisterMetaType<QPair<qint64, qint64>>();
-
     QApplication a(argc, argv);
-
-
-    // 获取应用程序的调色板
-    QPalette palette = a.palette();
-    // 设置焦点高亮颜色为蓝色
-    palette.setColor(QPalette::Active, QPalette::Highlight, QColor(0, 120, 215));     // 选中项背景色
-    palette.setColor(QPalette::Active, QPalette::HighlightedText, Qt::white);         // 选中项文字色
-    palette.setColor(QPalette::Inactive, QPalette::Highlight, QColor(0, 120, 215));
-    palette.setColor(QPalette::Inactive, QPalette::HighlightedText, Qt::white);
-    a.setPalette(palette);
-
 
     a.setApplicationName("DownloadManager");
     a.setOrganizationName("DownloadManager");
-    // a.setApplicationDisplayName("多线程下载器1.63b2");
 
-    int randomNum = QRandomGenerator::global()->generate();
-    QString hexStr = QString::number(static_cast<unsigned int>(randomNum), 16).toUpper();  // 16 表示十六进制，toUpper() 转为大写
-    QString newName = QString("多线程下载器1.66b-%1").arg(hexStr);
+    // const quint32 randomNum = QRandomGenerator::global()->generate();
+    // const QString hexStr = QString::number(randomNum, 16).toUpper(); // 16 表示十六进制，toUpper() 转为大写
+    // QString newName = QString("多线程下载器%1-%2").arg(APP_VERSION, hexStr);
+
+    a.setApplicationVersion(APP_VERSION);
+
+    QString newName = QString("多线程下载器%1").arg(APP_VERSION);
     a.setApplicationDisplayName(newName);
 
-    a.setApplicationVersion("1.6.6");
 
 #ifdef Q_OS_LINUX
     a.setDesktopFileName("download-manager");
@@ -55,3 +53,4 @@ int main(int argc, char *argv[])
 
     return a.exec();
 }
+
