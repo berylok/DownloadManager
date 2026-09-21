@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(DownloadManager VERSION 1.6.6 LANGUAGES CXX)
 
+add_compile_definitions($<$<CONFIG:Release>:QT_NO_DEBUG_OUTPUT>)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -14,7 +16,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-qt_add_executable(DownloadManager WIN32 MACOSX_BUNDLE
+qt_add_executable(DownloadManager
     src/main.cpp
     src/mainwindow.cpp
 
@@ -39,6 +41,7 @@ qt_add_executable(DownloadManager WIN32 MACOSX_BUNDLE
     src/aboutdialog.cpp
 )
 
+target_compile_definitions(DownloadManager PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_include_directories(DownloadManager PRIVATE src)
 
 target_link_libraries(DownloadManager PRIVATE
