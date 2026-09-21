@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(DownloadManager VERSION 1.6.6 LANGUAGES CXX)
+project(DownloadManager VERSION 1.6.9 LANGUAGES CXX)
 
 add_compile_definitions($<$<CONFIG:Release>:QT_NO_DEBUG_OUTPUT>)
 
